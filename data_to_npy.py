@@ -15,13 +15,13 @@ centerline_name_suffix = ".txt"
 
 nii_path = "data/coronal/img"  # path to the nii images
 gt_path = "data/coronal/seg"  # path to the ground truth
-centreline_path = "data/coronal/centreline_3d" # path to the centreline
-npy_path = "data/coronal/npy_256"
+centreline_path = "data/coronal/centreline_single" # path to the centreline
+npy_path = "data/coronal/npy_single"
 os.makedirs(join(npy_path, "gts"), exist_ok=True)
 os.makedirs(join(npy_path, "imgs"), exist_ok=True)
 os.makedirs(join(npy_path, "centreline"), exist_ok=True)
 
-image_size = 256
+image_size = 1024
 print(f"image size {image_size=}")
 
 names = sorted(os.listdir(gt_path))
@@ -41,7 +41,7 @@ print(f"after sanity check \# files {len(names)=}")
 
 
 # %% save preprocessed images and masks as npz files
-for name in tqdm(names):  # use the remaining 10 cases for validation
+for name in tqdm(names): 
     image_name = name.split(gt_name_suffix)[0] + img_name_suffix
     gt_name = name
     centreline_name = name.split(gt_name_suffix)[0] + centerline_name_suffix

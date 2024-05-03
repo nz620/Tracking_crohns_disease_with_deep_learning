@@ -28,11 +28,11 @@ class Adapter_Layer(nn.Module):
                 nn.Linear(hidden_dim, embed_dim, bias=False),
                 nn.Sigmoid()
         )
-        
+        reduced_dim = embed_dim // 64
         self.spatial = nn.Sequential(
-                nn.Conv2d(embed_dim, embed_dim, kernel_size=3, stride=2, padding=1, bias=False),
+                nn.Conv2d(embed_dim, reduced_dim, kernel_size=3, stride=2, padding=1, bias=False),
                 nn.ReLU(),
-                nn.ConvTranspose2d(embed_dim, embed_dim, kernel_size=4, stride=2, padding=1, bias=False),
+                nn.ConvTranspose2d(reduced_dim, embed_dim, kernel_size=4, stride=2, padding=1, bias=False),
                 nn.ReLU(),
         )
 

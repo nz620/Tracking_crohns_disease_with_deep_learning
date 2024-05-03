@@ -20,7 +20,7 @@ import shutil
 import glob
 from utils.display_helper import show_mask, show_points, show_box
 import re
-from skimage.transform import rotate
+from skimage import transform, util, filters, exposure
 import random
 random.seed(2023)  
 # set seeds
@@ -34,23 +34,6 @@ os.environ["OPENBLAS_NUM_THREADS"] = "4"  # export OPENBLAS_NUM_THREADS=4
 os.environ["MKL_NUM_THREADS"] = "6"  # export MKL_NUM_THREADS=6
 os.environ["VECLIB_MAXIMUM_THREADS"] = "4"  # export VECLIB_MAXIMUM_THREADS=4
 os.environ["NUMEXPR_NUM_THREADS"] = "6"  # export NUMEXPR_NUM_THREADS=6
-
-def flip_image(image, gt, points, flip_horizontal=True, flip_vertical=False):
-    # Flip image and ground truth using slicing and ensure positive strides with copy()
-    flipped_image = image.copy()
-    flipped_gt = gt.copy()
-
-    if flip_horizontal:
-        flipped_image = flipped_image[:, ::-1].copy()
-        flipped_gt = flipped_gt[:, ::-1].copy()
-        points[:, 0] = image.shape[1] - points[:, 0] - 1
-
-    if flip_vertical:
-        flipped_image = flipped_image[::-1, :].copy()
-        flipped_gt = flipped_gt[::-1, :].copy()
-        points[:, 1] = image.shape[0] - points[:, 1] - 1
-
-    return flipped_image, flipped_gt, points
 
 
 def rotate_and_crop_image(image, gt, points, angle):
@@ -97,12 +80,38 @@ def rotate_and_crop_image(image, gt, points, angle):
 
     return cropped_image, cropped_gt, transformed_points
 
+def apply_augmentations(img, gt, centreline):
+    if random.random() < 0.2:
+        # Scaling and rotation
+        angle = random.uniform(-180, 180)  # Angle for rotation
+        img, gt, centreline = rotate_and_crop_image(img, gt, centreline, angle)
 
+    if random.random() < 0.15:
+        # Gaussian noise
+        img = util.random_noise(img, mode='gaussian', var=random.uniform(0, 0.1))
+
+    if random.random() < 0.2:
+        # Gaussian blur
+        sigma = random.uniform(0.5, 1.5)
+        img = filters.gaussian(img, sigma=sigma)
+
+    if random.random() < 0.15:
+        # Brightness adjustment
+        v_factor = random.uniform(0.7, 1.3)
+        img = exposure.adjust_gamma(img, gamma=v_factor)
+
+    if random.random() < 0.15:
+        # Contrast adjustment
+        v_min, v_max = np.percentile(img, (5, 95))  
+        img = exposure.rescale_intensity(img, in_range=(v_min, v_max))
+
+    return img, gt, centreline
 
 class NpyDataset(Dataset):
-    def __init__(self, data_root, augment=False):
+    def __init__(self, data_root, augment=False, aug_num=1):
         self.data_root = data_root
         self.augment = augment
+        self.aug_num = aug_num + 1 if augment else 1   # Including the original image
         self.gt_path = join(data_root, "gts")
         self.img_path = join(data_root, "imgs")
         self.centreline_path = join(data_root, "centreline")
@@ -117,28 +126,24 @@ class NpyDataset(Dataset):
         print(f"Number of images: {len(self.gt_path_files)}")
 
     def __len__(self):
-        # Each image will have 1 original + 5 augmented versions
-        if self.augment:
-            return len(self.gt_path_files) * 72
-        else:
-            return len(self.gt_path_files)
+        return len(self.gt_path_files) * self.aug_num
 
     def __getitem__(self, index):
-        # Determine the original index and whether it's an augmented version
-        original_index = index // 72
-        augmentation_type = index % 72  # 0 for original, 1-5 for augmented versions
+        original_index = index // self.aug_num
+        augmentation_index = index % self.aug_num  # 0 for the original, 1-10 for augmented versions
 
         img_name = os.path.basename(self.gt_path_files[original_index])
         img_1024 = np.load(join(self.img_path, img_name), allow_pickle=True).copy()
         gt = np.load(join(self.gt_path, img_name), allow_pickle=True).copy()
         centreline = np.load(join(self.centreline_path, img_name), allow_pickle=True).copy()
 
-        if augmentation_type > 0 and self.augment:
-            img_1024,gt,centreline = rotate_and_crop_image(img_1024, gt, centreline, 5*augmentation_type)
-            
+        if augmentation_index > 0 and self.augment:
+            img_1024, gt, centreline = apply_augmentations(img_1024, gt, centreline)
+
         gt2D = np.isin(gt, np.unique(gt)[1:]).astype(np.uint8)
         centreline_label = np.ones(centreline.shape[0], dtype=np.int32)
         img_1024 = np.transpose(img_1024, (2, 0, 1))
+
         return (
             torch.tensor(img_1024).float(),
             torch.tensor(gt2D[None, :, :]).long(),
@@ -150,7 +155,7 @@ class NpyDataset(Dataset):
 
         
 if __name__ == "__main__":
-    coronal_dataset = NpyDataset('data/centreline_set/coronal/npy',augment=True)
+    coronal_dataset = NpyDataset('data/centreline_set/coronal/npy',augment=True,aug_num=1)
     # train_dataset = []
     # val_dataset = []
     
@@ -179,6 +184,7 @@ if __name__ == "__main__":
         show_mask(gt[idx].cpu().numpy(), axs[0])
         # Iterate through each pair of points in the centreline array
         show_points(centreline[idx].cpu().numpy(), centreline_label[0].numpy(), axs[0])
+        
         axs[0].axis("off")
         axs[0].set_title(names_temp[idx])
 
@@ -191,11 +197,11 @@ if __name__ == "__main__":
         axs[1].set_title(names_temp[idx])
 
         plt.subplots_adjust(wspace=0.01, hspace=0)
-        svaed_path = os.path.join("sanitytest_augmentation_flip", "data_sanitycheck"+str(names_temp)+str(step)+".png")
-        if not os.path.exists("sanitytest_augmentation_flip"):
-            os.makedirs("sanitytest_augmentation_flip")
+        svaed_path = os.path.join("sanitytest_multiaugmentation", "data_sanitycheck"+str(names_temp)+str(step)+".png")
+        if not os.path.exists("sanitytest_multiaugmentation"):
+            os.makedirs("sanitytest_multiaugmentation")
         plt.savefig(svaed_path, bbox_inches="tight", dpi=100)
         print(f"Saved to {svaed_path}")
         plt.close()
-        if step == 24:
+        if step == 40:
             break

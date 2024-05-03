@@ -10,6 +10,9 @@ from prompt_generator import get_centreline_points_from_file,centreline_prompt
 import pandas as pd
 from utils.display_helper import show_box,show_mask,show_points
 from skimage.morphology import skeletonize_3d,remove_small_objects
+from skimage.measure import label, regionprops
+from scipy.ndimage import binary_dilation
+from scipy.ndimage import binary_opening, binary_closing
 
 
 class Preprocessor:
@@ -138,9 +141,6 @@ def tidy_folder(source_folder,target_folder):
                 shutil.move(file_path, os.path.join(seg_folder, new_filename))
             else:
                 shutil.move(file_path, os.path.join(image_folder, new_filename))
-
-
-
 
 def rename_files(directory):
     for filename in os.listdir(directory):
@@ -310,71 +310,153 @@ class Generate_centreline_points:
             centreline_points.append((z, y, x))
         return centreline_points
 
-class Generate3DConnectCentrelinePoints:
+
+class Generate3DCentreline:
     """
-    Generate centreline points from the segmentation mask.
+    Generate a 3D centerline for segmented tubular structures, with options to downsample points per slice.
     """
 
-    def __init__(self, seg_folder, output_folder):
+    def __init__(self, seg_folder, output_folder, sampling_rate=1,min_size=6):
         self.seg_folder = seg_folder
         self.output_folder = output_folder
+        self.sampling_rate = sampling_rate  
+        self.min_size = min_size
 
-    def generate_centreline(self):
+    def generate_centerline(self):
         """
-        Generate centreline points from the 3D segmentation mask using skeletonization.
+        Process each segmentation file to extract and optionally sample the centerline.
         """
         os.makedirs(self.output_folder, exist_ok=True)
         for filename in tqdm.tqdm(os.listdir(self.seg_folder)):
             seg_path = os.path.join(self.seg_folder, filename)
             seg = sitk.ReadImage(seg_path)
-            seg_arr = sitk.GetArrayFromImage(seg)
-            seg_skeleton = skeletonize_3d(seg_arr.astype(bool))  # ensure input is boolean
-            seg_skeleton = self._prune_skeleton(seg_skeleton, 48)  # adjust min_size as needed
+            seg_array = sitk.GetArrayFromImage(seg)
+            
+            # Ensure the segmentation is boolean
+            seg_array = seg_array > 0
+            
+            # Skeletonize
+            skeleton = skeletonize_3d(seg_array)
+            # skeleton = self.prune_skeleton(skeleton)
 
-            centreline_points = self._extract_centreline_points(seg_skeleton)
+            # Extract centerline points from the skeleton
+            centreline_points = self.extract_centreline_points(skeleton)
+
+            # Save centerline points to a txt file
             output_filename = filename.replace('.nii.gz', '.txt')
             output_path = os.path.join(self.output_folder, output_filename)
             with open(output_path, 'w') as file:
                 for point in centreline_points:
                     file.write(f'{point[0]} {point[1]} {point[2]}\n')
 
-    def _prune_skeleton(self, seg_skeleton, min_size):
+    def extract_centreline_points(self, skeleton):
         """
-        Remove small objects from the skeleton to reduce noise.
-        """
-        cleaned_skeleton = remove_small_objects(seg_skeleton, min_size=min_size, connectivity=1)
-        return cleaned_skeleton
-
-    def _extract_centreline_points(self, seg_skeleton):
-        """
-        Extract centreline points from the 3D skeletonized array.
+        Extract the coordinates of all non-zero points in the skeleton, applying sampling to reduce density.
         """
         centreline_points = []
-        # Get the indices of non-zero elements (i.e., skeleton points)
-        z_indices, y_indices, x_indices = np.nonzero(seg_skeleton)
-        for z, y, x in zip(z_indices, y_indices, x_indices):
-            centreline_points.append((z, y, x))
+        z_indices, y_indices, x_indices = np.nonzero(skeleton)
+        previous_slice = -1
+        slice_points = []
+
+        for z, y, x in sorted(zip(z_indices, y_indices, x_indices)):
+            if z != previous_slice:
+                if slice_points:
+                    centreline_points.extend(slice_points[::self.sampling_rate])
+                slice_points = []
+                previous_slice = z
+            slice_points.append((z, y, x))
+        
+        if slice_points:  # Add remaining points from the last slice
+            centreline_points.extend(slice_points[::self.sampling_rate])
+
+        return centreline_points
+    
+    def prune_skeleton(self, skeleton):
+        """
+        Prune the skeleton to remove noise and small branches.
+        """
+        # Convert to boolean if not already
+        skeleton_bool = skeleton > 0
+
+        # Apply morphological opening to remove small objects
+        pruned = binary_opening(skeleton_bool, structure=np.ones((3,3,3)))
+
+        # Remove small objects based on a size threshold
+        pruned = remove_small_objects(pruned, min_size=self.min_size, connectivity=2)
+
+        # Optionally: additional pruning logic here, such as removing dangling ends or short branches
+
+        return pruned
+
+
+class Generate_single_centreline_points:
+    """
+    Generate a single centreline point from the segmentation mask, which represents the centroid of the segment.
+    """
+    def __init__(self, seg_folder, output_folder):
+        self.seg_folder = seg_folder
+        self.output_folder = output_folder
+
+    def generate_centreline(self):
+        """
+        Generate centreline points from the segmentation mask.
+        """
+        os.makedirs(self.output_folder, exist_ok=True)
+        for filename in os.listdir(self.seg_folder):
+            seg_path = os.path.join(self.seg_folder, filename)
+            seg = sitk.ReadImage(seg_path)
+            seg_arr = sitk.GetArrayFromImage(seg)
+
+            centreline_points = self._generate_centreline_points(seg_arr)
+
+            output_filename = filename.replace('.nii.gz', '.txt')
+            output_path = os.path.join(self.output_folder, output_filename)
+            with open(output_path, 'w') as file:
+                for point in centreline_points:
+                    file.write(f'{point[0]} {point[1]} {point[2]}\n')
+
+    def _generate_centreline_points(self, seg_arr):
+        """
+        Generate the centre point for each connected component in the segmentation array.
+        """
+        centreline_points = []
+        for slice_idx in tqdm.tqdm(range(seg_arr.shape[0])):
+            slice = seg_arr[slice_idx]
+            labeled_image = sitk.ConnectedComponent(sitk.GetImageFromArray(slice))
+            
+            # Use LabelShapeStatisticsImageFilter to find centroids
+            label_shape_filter = sitk.LabelShapeStatisticsImageFilter()
+            label_shape_filter.Execute(labeled_image)
+            num_features = label_shape_filter.GetNumberOfLabels()
+
+            if num_features > 0:
+                for label in range(1, num_features + 1):
+                    # Find the centroid of each label
+                    centroid = label_shape_filter.GetCentroid(label)
+                    centreline_points.append((slice_idx, int(centroid[1]), int(centroid[0])))  # Ensure x, y are in correct order
+
         return centreline_points
 
 
+
 if __name__ == "__main__":
-    testing = 0
+    testing = 1
     display = 0
 
     if not testing and not display:
-        generator = Generate3DConnectCentrelinePoints("data/coronal/seg", "data/coronal/centreline_3d")
+        generator = Generate_single_centreline_points("data/coronal/seg", "data/coronal/centreline_single")
         generator.generate_centreline()
-        display = 1
+        testing = 0
         
     if testing and not display:
-        for filename in tqdm.tqdm(sorted(os.listdir("data/coronal/centreline_3d"))):
+        for filename in tqdm.tqdm(sorted(os.listdir("data/coronal/centreline_single"))):
             img_path = os.path.join("data/coronal/img", filename.replace('.txt', '.nii.gz'))
             seg_path = os.path.join("data/coronal/seg", filename.replace('.txt', '.nii.gz'))
             img = sitk.ReadImage(img_path)
             img_arr = sitk.GetArrayFromImage(img)
             seg = sitk.ReadImage(seg_path)
             seg_arr = sitk.GetArrayFromImage(seg)
-            centreline_path = os.path.join("data/coronal/centreline", filename)
+            centreline_path = os.path.join("data/coronal/centreline_single", filename)
             points_df = get_centreline_points_from_file(centreline_path)
 
             for slice_number in range(seg_arr.shape[0]):  # Corrected iteration over slices
@@ -393,14 +475,15 @@ if __name__ == "__main__":
                 plt.title(f"Segmentation - Slice {slice_number}")
                 plt.imshow(seg_slice, cmap='gray')
                 show_mask(seg_slice, plt.gca())
-                save_path = os.path.join("weak_3dcentreline_visualise", filename.replace('.txt', ''), f"slice_{slice_number}.png")
+                save_path = os.path.join("weak_centreline_single_visualise", filename.replace('.txt', ''), f"slice_{slice_number}.png")
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 plt.savefig(save_path, bbox_inches='tight', dpi=100)
                 plt.close()
+        display = 0
                     
     if display:
-        for filename in tqdm.tqdm(os.listdir('data/coronal/centreline_3d')):
-            data_path = os.path.join('data/coronal/centreline_3d', filename)
+        for filename in tqdm.tqdm(os.listdir('data/coronal/centreline_single')):
+            data_path = os.path.join('data/coronal/centreline_single', filename)
             centreline_points = get_centreline_points_from_file(data_path, percentage=20)
 
             xs = centreline_points["x"]
@@ -414,7 +497,7 @@ if __name__ == "__main__":
             ax.set_ylabel('Y Coordinate')
             ax.set_zlabel('Slice Number')
             ax.set_title('3D Scatter Plot of Centreline Points')
-            saved_path = os.path.join('centreline_plot', filename.replace('.txt', '.png'))
+            saved_path = os.path.join('centreline_singlepoint_plot', filename.replace('.txt', '.png'))
             
             if not os.path.exists(os.path.dirname(saved_path)):
                 os.makedirs(os.path.dirname(saved_path))
