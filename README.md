@@ -4,4 +4,4 @@ Meng Final project
 - Thanks to the open-source of the following projects:
   - [Segment Anything](https://github.com/facebookresearch/segment-anything) &#8194;
   - [SAM-Med2D](https://github.com/OpenGVLab/SAM-Med2D/tree/main)
-  - [MedSAM]([https://github.com/OpenGVLab/SAM-Med2D/tree/main](https://github.com/bowang-lab/MedSAM.git))
+  - [MedSAM](https://github.com/bowang-lab/MedSAM.git)
