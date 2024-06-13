@@ -18,19 +18,22 @@ import shutil
 import glob
 import re
 
-def show_mask(mask, ax, random_color=False):
-    if random_color:
-        color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
+def show_mask(mask, ax, gt=False):
+    if gt:
+        color = np.array([30/ 255, 252 / 255, 30 / 255, 0.3])
     else:
-        color = np.array([251 / 255, 252 / 255, 30 / 255, 0.6])
+        color = np.array([251 / 255,  25/ 255, 30 / 255, 0.5])
     h, w = mask.shape[-2:]
     mask_image = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
-    ax.imshow(mask_image)
+    if gt:
+        ax.imshow(mask_image) 
+    else:
+        ax.imshow(mask_image)
 
-def show_points(coords, labels, ax, marker_size=50):
+def show_points(coords, labels, ax, marker_size=60):
     pos_points = coords[labels==1]
     neg_points = coords[labels==0]
-    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='.', s=marker_size)
+    ax.scatter(pos_points[:, 0], pos_points[:, 1], color='blue', marker='.', s=marker_size)
     ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='.', s=marker_size)
     
     

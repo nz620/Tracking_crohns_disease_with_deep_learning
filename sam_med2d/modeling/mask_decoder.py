@@ -152,6 +152,84 @@ class MaskDecoder(nn.Module):
 
         return masks, iou_pred
 
+class MaskDecoderWithParallelBranch(MaskDecoder):
+    def __init__(
+        self,
+        transformer_dim: int,
+        transformer: nn.Module,
+        num_multimask_outputs: int = 3,
+        activation: Type[nn.Module] = nn.GELU,
+        iou_head_depth: int = 3,
+        iou_head_hidden_dim: int = 256,
+        cnn_output_dim: int = 256,  # Add this parameter for CNN output dimension
+    ) -> None:
+        super().__init__(
+            transformer_dim=transformer_dim,
+            transformer=transformer,
+            num_multimask_outputs=num_multimask_outputs,
+            activation=activation,
+            iou_head_depth=iou_head_depth,
+            iou_head_hidden_dim=iou_head_hidden_dim,
+        )
+        # Adjust the upscaling and other layers to handle the combined dimension
+        combined_dim = transformer_dim + cnn_output_dim
+        self.output_upscaling = nn.Sequential(
+            nn.ConvTranspose2d(combined_dim, combined_dim // 4, kernel_size=2, stride=2),
+            LayerNorm2d(combined_dim // 4),
+            activation(),
+            nn.ConvTranspose2d(combined_dim // 4, combined_dim // 8, kernel_size=2, stride=2),
+            activation(),
+        )
+        self.output_hypernetworks_mlps = nn.ModuleList(
+            [
+                MLP(combined_dim, combined_dim, combined_dim // 8, 3)
+                for _ in range(self.num_mask_tokens)
+            ]
+        )
+
+    def predict_masks(
+        self,
+        image_embeddings: torch.Tensor,
+        image_pe: torch.Tensor,
+        sparse_prompt_embeddings: torch.Tensor,
+        dense_prompt_embeddings: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        # Concatenate output tokens
+        output_tokens = torch.cat([self.iou_token.weight, self.mask_tokens.weight], dim=0)
+        output_tokens = output_tokens.unsqueeze(0).expand(sparse_prompt_embeddings.size(0), -1, -1)
+        tokens = torch.cat((output_tokens, sparse_prompt_embeddings), dim=1)
+
+        # Expand per-image data in batch direction to be per-mask
+        combined_embeddings = torch.cat([image_embeddings, dense_prompt_embeddings], dim=1)
+        pos_src = torch.cat([image_pe, image_pe], dim=1)  # Ensure pos_src matches combined_embeddings
+        print('combined_embeddings shape:', combined_embeddings.shape)
+        print('pos_src shape:', pos_src.shape)
+        print('tokens shape:', tokens.shape)
+
+        src = combined_embeddings + pos_src
+        b, c, h, w = src.shape
+
+        # Run the transformer
+        hs, src = self.transformer(src, pos_src, tokens)
+        iou_token_out = hs[:, 0, :]
+        mask_tokens_out = hs[:, 1 : (1 + self.num_mask_tokens), :]
+
+        # Upscale mask embeddings and predict masks using the mask tokens
+        src = src.transpose(1, 2).view(b, c, h, w)
+        upscaled_embedding = self.output_upscaling(src)
+        hyper_in_list: List[torch.Tensor] = []
+        for i in range(self.num_mask_tokens):
+            hyper_in_list.append(self.output_hypernetworks_mlps[i](mask_tokens_out[:, i, :]))
+        hyper_in = torch.stack(hyper_in_list, dim=1)
+
+        b, c, h, w = upscaled_embedding.shape
+        masks = (hyper_in @ upscaled_embedding.view(b, c, h * w)).view(b, -1, h, w)
+
+        # Generate mask quality predictions
+        iou_pred = self.iou_prediction_head(iou_token_out)
+
+        return masks, iou_pred
+
 
 # Lightly adapted from
 # https://github.com/facebookresearch/MaskFormer/blob/main/mask_former/modeling/transformer/transformer_predictor.py # noqa

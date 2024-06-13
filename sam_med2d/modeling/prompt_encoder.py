@@ -100,7 +100,6 @@ class PromptEncoder(nn.Module):
 
     def _embed_boxes(self, boxes: torch.Tensor) -> torch.Tensor:
         """Embeds box prompts."""
-
         boxes = boxes + 0.5  # Shift to center of pixel
         coords = boxes.reshape(-1, 2, 2)
         corner_embedding = self.pe_layer.forward_with_coords(coords, self.input_image_size)
@@ -165,9 +164,15 @@ class PromptEncoder(nn.Module):
             point_embeddings = self._embed_points(coords, labels, pad=(boxes is None))
             sparse_embeddings = torch.cat([sparse_embeddings, point_embeddings], dim=1)
 
+        # if boxes is not None:
+        #     print(boxes.shape)  #B,4
+        #     box_embeddings = self._embed_boxes(boxes)
+        #     print(box_embeddings.shape)  #B,2,2,256
+        #     sparse_embeddings = torch.cat([sparse_embeddings, box_embeddings], dim=1)
         if boxes is not None:
-            box_embeddings = self._embed_boxes(boxes)
-            sparse_embeddings = torch.cat([sparse_embeddings, box_embeddings], dim=1)
+            for i in range(boxes.shape[1]):
+                box_embeddings = self._embed_boxes(boxes[:, i, :])
+                sparse_embeddings = torch.cat([sparse_embeddings, box_embeddings], dim=1)
 
         if masks is not None:
             dense_embeddings = self._embed_masks(masks)

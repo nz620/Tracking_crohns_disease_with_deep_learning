@@ -5,7 +5,6 @@ join = os.path.join
 from skimage import transform,exposure
 from tqdm import tqdm
 import cc3d
-import cv2
 from prompt_generator import get_centreline_points_from_file,centreline_prompt
 
 # convert nii image to npz files, including original image and corresponding masks
@@ -14,10 +13,10 @@ img_name_suffix = ".nii.gz"
 gt_name_suffix = ".nii.gz"
 centerline_name_suffix = ".txt"
 
-nii_path = "data/axial/img"  # path to the nii images
-gt_path = "data/axial/seg"  # path to the ground truth
-centreline_path = "data/axial/centreline_single_skeltonize" # path to the centreline
-npy_path = "data/axial/npy2023_25d"
+nii_path = "data/coronal/img"  # path to the nii images
+gt_path = "data/coronal/seg"  # path to the ground truth
+centreline_path = "data/coronal/centreline_single" # path to the centreline
+npy_path = "data/coronal/npy2023"
 os.makedirs(join(npy_path, "gts"), exist_ok=True)
 os.makedirs(join(npy_path, "imgs"), exist_ok=True)
 os.makedirs(join(npy_path, "centreline"), exist_ok=True)
@@ -40,7 +39,7 @@ names = [
 ]
 print(f"after sanity check \# files {len(names)=}")
 
-clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+
 # %% save preprocessed images and masks as npz files
 for name in tqdm(names): 
     image_name = name.split(gt_name_suffix)[0] + img_name_suffix
@@ -59,7 +58,7 @@ for name in tqdm(names):
         centreline_prompt_points = centreline_prompt(centreline_points,i)
         if np.any(gt_data_ori[i]>0) and len(centreline_prompt_points) > 0:
             z_index.append(i)
-  
+
     if len(z_index) > 0:
         # crop the ground truth with non-zero slices
         gt_roi = gt_data_ori[z_index, :, :]
@@ -69,8 +68,8 @@ for name in tqdm(names):
         image_data = sitk.GetArrayFromImage(img_sitk)
         # nii preprocess start
         lower_bound, upper_bound = np.percentile(
-                image_data[image_data > 0], 0.5
-            ), np.percentile(image_data[image_data > 0], 99.5)
+            image_data[image_data > 0], 0.5
+        ), np.percentile(image_data[image_data > 0], 99.5)
         image_data_pre = np.clip(image_data, lower_bound, upper_bound)
         image_data_pre = (
             (image_data_pre - np.min(image_data_pre))
@@ -79,12 +78,17 @@ for name in tqdm(names):
         )
         image_data_pre[image_data == 0] = 0
 
-        image_data_pre = np.uint8(image_data_pre)
-
         # Histogram Equalization
-        for i in range(image_data_pre.shape[0]):
-            image_data_pre[i] = clahe.apply(image_data_pre[i])
+        image_data_pre = exposure.equalize_hist(image_data_pre)
         
+        # Standardization (Z-score normalization)
+        image_data_pre = (image_data_pre - np.mean(image_data_pre)) / np.std(image_data_pre)
+        
+        # Clip to range [0, 1]
+        image_data_pre = np.clip(image_data_pre, 0, 1)
+
+        # Convert to uint8
+        image_data_pre = np.uint8(image_data_pre * 255)
         img_roi = image_data_pre[z_index, :, :]
         np.savez_compressed(join(npy_path, gt_name.split(gt_name_suffix)[0]+'.npz'), imgs=img_roi, gts=gt_roi, spacing=img_sitk.GetSpacing())
         # save the image and ground truth as nii files for sanity check;
@@ -93,17 +97,8 @@ for name in tqdm(names):
         for i in z_index:
             ori_h, ori_w = image_data_pre[i, :, :].shape
             scale_h, scale_w = image_size / ori_h, image_size / ori_w
-            # img_i = image_data_pre[i, :, :]
-            # img_3c = np.repeat(img_i[:, :, None], 3, axis=-1)
-            prev_idx = i - 1 if i - 1 in z_index else i
-            next_idx = i + 1 if i + 1 in z_index else i
-            
-            # Fetch the images for the current stack
-            img_prev = image_data_pre[prev_idx, :, :]
-            img_next = image_data_pre[next_idx, :, :]
             img_i = image_data_pre[i, :, :]
-            # img_3c = np.repeat(img_i[:, :, None], 3, axis=-1)
-            img_3c = np.stack([img_prev, img_i, img_next], axis=-1)
+            img_3c = np.repeat(img_i[:, :, None], 3, axis=-1)
             resize_img_skimg = transform.resize(
                 img_3c,
                 (image_size, image_size),

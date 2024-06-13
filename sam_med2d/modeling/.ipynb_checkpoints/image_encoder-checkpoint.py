@@ -36,6 +36,13 @@ class Adapter_Layer(nn.Module):
                 nn.ReLU(),
         )
 
+        # self.spatial = nn.Sequential(
+        #         nn.AdaptiveAvgPool2d((16,16)),
+        #         nn.ReLU(),
+        #         # Scale factor should match the target output size
+        #         nn.Upsample(size=(64, 64), mode='nearest'),  # Adjust the size here to match the input
+        #         nn.ReLU(),
+        # )
         for m in self.modules():
             if isinstance(m, (nn.Linear, nn.Conv2d, nn.ConvTranspose2d)):
                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
@@ -75,8 +82,7 @@ class ImageEncoderViT(nn.Module):
         window_size: int = 0,
         global_attn_indexes: Tuple[int, ...] = (),
         adapter_train = True,
-        reduce_ratio = 64,
-        adapter_mlp_ratio = 0.25
+        reduce_ratio = 64
     ) -> None:
         """
         Args:
@@ -117,7 +123,7 @@ class ImageEncoderViT(nn.Module):
         self.blocks = nn.ModuleList()
         for i in range(depth):
             if adapter_train:
-                if i % 6 == 0:
+                if i % 4 == 0:
                     adapter = True
                 else:
                     adapter = False
@@ -133,8 +139,7 @@ class ImageEncoderViT(nn.Module):
                 window_size=window_size if i not in global_attn_indexes else 0,
                 input_size=(img_size // patch_size, img_size // patch_size),
                 adapter = adapter if adapter_train else False,
-                reduce_ratio=reduce_ratio,
-                adapter_mlp_ratio=adapter_mlp_ratio
+                reduce_ratio=reduce_ratio
             )
             self.blocks.append(block)
 
@@ -265,10 +270,10 @@ class ImageEncoderViTWithParallelBranch(ImageEncoderViT):
         
         # Parallel CNN Branch
         cnn_features = self.parallel_cnn_branch(x)
-        combined_features = cnn_features + vit_features
-        # combined_features = torch.cat((cnn_features, vit_features), dim=1)
+        # combined_features = cnn_features + vit_features
+        combined_features = torch.cat((cnn_features, vit_features), dim=1)
         
-        # combined_features = self.merge_layer(combined_features)
+        combined_features = self.merge_layer(combined_features)
         return combined_features
 
 class Block(nn.Module):
@@ -286,8 +291,7 @@ class Block(nn.Module):
         window_size: int = 0,
         input_size: Optional[Tuple[int, int]] = None,
         adapter: bool = False,
-        reduce_ratio = 64,
-        adapter_mlp_ratio = 0.25
+        reduce_ratio = 64
     ) -> None:
         """
         Args:
@@ -321,16 +325,13 @@ class Block(nn.Module):
 
         self.window_size = window_size
         if self.adapter:
-            self.Adapterlayer1 = Adapter_Layer(dim,reduce_ratio=reduce_ratio,mlp_ratio=adapter_mlp_ratio)
-            self.Adapterlayer2 = Adapter_Layer(dim,reduce_ratio=reduce_ratio,mlp_ratio=adapter_mlp_ratio)
+            self.Adapterlayer1 = Adapter_Layer(dim,reduce_ratio=reduce_ratio)
+            self.Adapterlayer2 = Adapter_Layer(dim,reduce_ratio=reduce_ratio)
 
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         shortcut = x
         x = self.norm1(x)
-
-        if self.adapter:
-            x = self.Adapterlayer1(x) 
 
         # Window partition
         if self.window_size > 0:
@@ -349,8 +350,6 @@ class Block(nn.Module):
         x = shortcut + x
 
         x_norm = self.norm2(x)
-        
-
         if self.adapter:
             x = x + self.mlp(x_norm) + self.Adapterlayer2(x_norm)
         else:

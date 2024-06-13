@@ -22,8 +22,11 @@ from utils.display_helper import show_mask, show_points, show_box
 import cv2
 from dataloader_augment import NpyDataset
 from torch.utils.tensorboard import SummaryWriter
+import wandb
+from torch.cuda.amp import GradScaler, autocast
 # set seeds
 torch.manual_seed(2023)
+random.seed(2023)
 torch.cuda.empty_cache()
 
 # # torch.distributed.init_process_group(backend="gloo")
@@ -36,32 +39,35 @@ os.environ["NUMEXPR_NUM_THREADS"] = "6"  # export NUMEXPR_NUM_THREADS=6
 
 
 join = os.path.join
-# %% set up parser
+#dataloading
 parser = argparse.ArgumentParser()
-parser.add_argument(
-    "-i",
-    "--tr_npy_path",
-    type=str,
-    default="data/centreline_set/coronal/npy",
-    help="path to training npy files; three subfolders: gts, imgs and centreline")
-parser.add_argument("-task_name", type=str, default="samvitb_pretrain_img1024_smallimageadapter_64_aug2_newweakcentreline_mask")
-parser.add_argument("-model_type", type=str, default="vit_b")
+parser.add_argument("--true_yy_path", type=str, default="data/centreline_set", help="path to training npy files; three subfolders: gts, imgs and centreline")
+parser.add_argument('--include_weak', action='store_false', help='include weakly labelled data')
+parser.add_argument("--weak_npy_path", type=str, default="data", help="path to weakly labelled npy files")
+parser.add_argument("--task_name", type=str, default="samvitb_pretrain_img1024_smallimageadapter_32_aug2_newweakcentreline_mask")
+parser.add_argument("--data_type", type=str, default="coronal")
+parser.add_argument("--aug_num", type=int, default=1)
+#model
+parser.add_argument("--model_type", type=str, default="vit_b")
 parser.add_argument("--sam_checkpoint", type=str, default="work_dir/SAM/sam_vit_b_01ec64.pth")
-parser.add_argument("--load_pretrain", type=bool, default=True, help="use wandb to monitor training")
-parser.add_argument("-pretrain_model_path", type=str, default="")
-parser.add_argument("-work_dir", type=str, default="./work_dir")
-# train
-parser.add_argument("-num_epochs", type=int, default=100)
-parser.add_argument("-batch_size", type=int, default=1)
-parser.add_argument("-num_workers", type=int, default=1)
-# Optimizer parameters
-parser.add_argument("-weight_decay", type=float, default=0.01, help="weight decay (default: 0.01)")
-parser.add_argument("-lr", type=float, default=0.0001, metavar="LR", help="learning rate (absolute lr)")
-parser.add_argument("-use_wandb", type=bool, default=False, help="use wandb to monitor training")
-parser.add_argument("-use_amp", action="store_true", default=False, help="use amp")
-parser.add_argument("--resume", type=str, default="", help="Resuming training from checkpoint")
-parser.add_argument("--encoder_adapter", type=bool, default=True, help="use adapter")
+parser.add_argument("--encoder_adapter", action='store_false', help="use adapter")
 parser.add_argument("--image_size", type=int, default=1024, help="image_size")
+parser.add_argument("--work_dir", type=str, default="./work_dir")
+parser.add_argument("--reduce_ratio", type=int, default=96, help="adapter_emebeding to embed_dimension//64")
+# train
+parser.add_argument("--num_epochs", type=int, default=50)
+parser.add_argument("--batch_size", type=int, default=1)
+parser.add_argument("--num_workers", type=int, default=1)
+#early stopping
+parser.add_argument("--patience", type=int, default=5)
+parser.add_argument("--min_delta", type=float, default=0.001)
+parser.add_argument("--consecutive", type=int, default=7)
+# Optimizer and scheduler parameters
+parser.add_argument("--weight_decay", type=float, default=0.01, help="weight decay (default: 0.01)")
+parser.add_argument("--lr", type=float, default=0.01, metavar="LR", help="learning rate (absolute lr)")
+parser.add_argument("--wp", type=int, default=3, help="warmup period")
+#other                   
+parser.add_argument("--use_wandb", action='store_true', help="use wandb to monitor training")
 parser.add_argument("--metrics", nargs='+', default=['iou', 'dice'], help="metrics")
 args = parser.parse_args()
 
@@ -70,7 +76,8 @@ run_id = datetime.now().strftime("%Y%m%d-%H%M")
 model_save_path = join(args.work_dir,run_id+args.task_name)
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-class MedSAM(nn.Module):
+
+class CrohnSAM(nn.Module):
     def __init__(
         self,
         image_encoder,
@@ -119,82 +126,158 @@ class MedSAM(nn.Module):
             align_corners=False,
         )
         return ori_res_masks, predict_iou
+    
 sam_model = sam_model_registry[args.model_type](args)
-medsam_model = MedSAM(
+crohnsam_model = CrohnSAM(
     image_encoder=sam_model.image_encoder,
     mask_decoder=sam_model.mask_decoder,
     prompt_encoder=sam_model.prompt_encoder,
 ).to(device)
 
+def load_train_datasets(args):
+    """
+    Load training, validation, and optionally test datasets based on provided arguments.
+    """
+    # Load main dataset
+    main_dataset = NpyDataset(join(args.true_npy_path,args.data_type,'npy'), augment=True, aug_num=args.aug_num)  # Example augmentation settings
+    main_dataset_validate = NpyDataset(join(args.true_npy_path,args.data_type,'npy','validation'), augment=False)
+    
+    # Load weakly labelled dataset if specified
+    if args.include_weak:
+        weak_dataset = NpyDataset(join(args.weak_npy_path,args.data_type,'npy_single'), augment=True, aug_num=args.aug_num)
+        weak_dataset_validate = NpyDataset(join(args.weak_npy_path,args.data_type,'npy_single','validation'), augment=False)
+        
+        # Combine datasets
+        train_dataset = ConcatDataset([main_dataset, weak_dataset])
+        validate_dataset = ConcatDataset([main_dataset_validate, weak_dataset_validate])
+    else:
+        train_dataset = main_dataset
+        validate_dataset = main_dataset_validate
+    
+    # Create DataLoader for training and validation datasets
+    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=True)
+    validate_dataloader = DataLoader(validate_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+
+    return train_dataloader, validate_dataloader
+
+def lr_schedule(epoch, wp=10, mi=100, initial_lr=0.0001):
+    if epoch <= wp:
+        # Linear increase from 0 to initial_lr over the warmup period
+        return initial_lr * (epoch / wp)
+    elif wp < epoch <= wp + 5:
+        # Constant learning rate for 5 epochs after warmup
+        return initial_lr
+    else:
+        # Begin decay after wp + 10
+        # Adjust the decay phase to start after wp + 10
+        return initial_lr * (1 - ((epoch - (wp)) / (mi - (wp))))
+
+class EarlyStopping:
+    def __init__(self, patience=10, min_delta=0.0001, consecutive=3):
+        """
+        patience: Number of epochs with no improvement after which training will be stopped.
+        min_delta: Minimum change in the monitored quantity to qualify as an improvement.
+        consecutive: Number of checks over which the rate of improvement is calculated.
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.consecutive = consecutive
+        self.patience_counter = 0
+        self.best_loss = np.inf
+        self.losses = []
+
+    def __call__(self, current_loss):
+        self.losses.append(current_loss)
+        if current_loss < self.best_loss - self.min_delta:
+            self.best_loss = current_loss
+            self.patience_counter = 0  # reset counter if improvement
+        else:
+            self.patience_counter += 1
+
+        if self.patience_counter >= self.patience:
+            print("Stopping training: no improvement in validation loss")
+            return True
+
+        if len(self.losses) > self.consecutive:
+            # Calculate the rate of change
+            deltas = [self.losses[i] - self.losses[i - 1] for i in range(-self.consecutive, 0)]
+            mean_delta = np.mean(deltas)
+            if abs(mean_delta) < self.min_delta:
+                print("Stopping training: minimal improvement")
+                return True
+
+        return False
+
 def train():
+
     os.makedirs(model_save_path, exist_ok=True)
     shutil.copyfile(
         __file__, join(model_save_path, run_id + "_" + os.path.basename(__file__))
     )
     log_dir = os.path.join(model_save_path, "logs")
     writer = SummaryWriter(log_dir)
-
-    medsam_model.train()
+    
+    if args.use_wandb:
+        wandb.init(project="Tracking Crohn",name=args.task_name, config=args)
+        wandb.watch(crohnsam_model, log="all", log_freq=2000)
+    crohnsam_model.train()
+    scaler = GradScaler(growth_factor=1.01, backoff_factor=0.5)
 
     print(
         "Number of total parameters: ",
-        sum(p.numel() for p in medsam_model.parameters()),
+        sum(p.numel() for p in crohnsam_model.parameters()),
     )  # 93735472
     print(
         "Number of trainable parameters: ",
-        sum(p.numel() for p in medsam_model.parameters() if p.requires_grad),
+        sum(p.numel() for p in crohnsam_model.parameters() if p.requires_grad),
     )  # 93729252
 
-    trainable_params = [param for param in medsam_model.parameters() if param.requires_grad]
+    trainable_params = [param for param in crohnsam_model.parameters() if param.requires_grad]
     
     # Initialize the optimizer with only trainable parameters
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
 
-    print("Number of trainable parameters: ", sum(p.numel() for p in trainable_params))
-    print("Number of trainable image encoder", sum(p.numel() for p in medsam_model.image_encoder.parameters() if p.requires_grad))
-    print("Number of freeze image encoder", sum(p.numel() for p in medsam_model.image_encoder.parameters() if not p.requires_grad))
-    print("Number of trainable mask decoder", sum(p.numel() for p in medsam_model.mask_decoder.parameters() if p.requires_grad))
-    print("Number of freeze mask encoder", sum(p.numel() for p in medsam_model.mask_decoder.parameters() if not p.requires_grad))
-    print("Number of trainable prompt encoder", sum(p.numel() for p in medsam_model.prompt_encoder.parameters() if p.requires_grad))
-    print("Number of freeze prompt encoder", sum(p.numel() for p in medsam_model.prompt_encoder.parameters() if not p.requires_grad))
+    # LambdaLR scheduler:
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lr_lambda=lambda epoch: lr_schedule(epoch, wp=args.wp, mi=args.num_epochs, initial_lr=args.lr)
+    )
+    
+    print("Number of trainable image encoder", sum(p.numel() for p in crohnsam_model.image_encoder.parameters() if p.requires_grad))
+    print("Number of freeze image encoder", sum(p.numel() for p in crohnsam_model.image_encoder.parameters() if not p.requires_grad))
+    print("Number of trainable mask decoder", sum(p.numel() for p in crohnsam_model.mask_decoder.parameters() if p.requires_grad))
+    print("Number of freeze mask encoder", sum(p.numel() for p in crohnsam_model.mask_decoder.parameters() if not p.requires_grad))
+    print("Number of trainable prompt encoder", sum(p.numel() for p in crohnsam_model.prompt_encoder.parameters() if p.requires_grad))
+    print("Number of freeze prompt encoder", sum(p.numel() for p in crohnsam_model.prompt_encoder.parameters() if not p.requires_grad))
     seg_loss = FocalDiceloss_IoULoss()
-    # dice_loss = monai.losses.DiceLoss(sigmoid=True, squared_pred=True, reduction="mean")
-    # cross entropy loss
-    # ce_loss = nn.BCEWithLogitsLoss(reduction="mean")
-    # %% train
     num_epochs = args.num_epochs
     train_losses = []
     val_losses = []
-    coronal_dataset = NpyDataset('data/centreline_set/coronal/npy',augment=True)
-    coronal_dataset_validate = NpyDataset('data/centreline_set/coronal/npy/validation',augment=False)
-    # axial_dataset = NpyDataset('data/centreline_set/axial/npy',augment=True)
-    # axial_dataset_validate = NpyDataset('data/centreline_set/axial/npy/validation',augment=False)
-    coronal_dataset_weak_centreline = NpyDataset('data/coronal/npy_single',augment=True)
-    coronal_dataset_weak_centreline_validate = NpyDataset('data/coronal/npy_single/validation',augment=False)
-    # Create DataLoaders for training and validation sets
-    train_dataset = ConcatDataset([coronal_dataset, coronal_dataset_weak_centreline])
-    valid_dataset = ConcatDataset([coronal_dataset_validate, coronal_dataset_weak_centreline_validate])
-    train_dataloader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
-    valid_dataloader = DataLoader(valid_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+    train_dataloader, validate_dataloader = load_train_datasets(args)
     print("Number of training samples: ", len(train_dataloader))
-    print("Number of validation samples: ", len(valid_dataloader))
+    print("Number of validation samples: ", len(validate_dataloader))
     
     start_epoch = 0
     best_loss = 1e10
-    patience = 7
-    patience_counter = 0  
-    
+    early_stopping = EarlyStopping(patience=args.patience, min_delta=args.min_delta, consecutive=args.consecutive)
+
     for epoch in range(start_epoch, num_epochs):
-        medsam_model.train()
+        crohnsam_model.train()
         train_loss = 0
         for step, (image, gt2D, point,point_label, _) in enumerate(tqdm(train_dataloader)):
             optimizer.zero_grad()
+            # with autocast():  # Enable autocast for the forward pass
+            #     images, gt2Ds = image.to(device), gt2D.to(device)
+            #     crohnsam_pred, iou_pred = crohnsam_model(images, point, point_label)
+            #     loss = seg_loss(crohnsam_pred, gt2Ds, iou_pred)
+            # scaler.scale(loss).backward()  # Scale loss and call backward()
+            # scaler.step(optimizer)  # Safe optimizer step
+            # scaler.update()  # Update the scaler
             point_np = point.detach().cpu().numpy()
             point_label_np = point_label.detach().cpu().numpy()
             image, gt2D = image.to(device), gt2D.to(device)
-            medsam_pred,iou_pred= medsam_model(image, point_np,point_label_np)
-            # loss = dice_loss(medsam_pred, gt2D) + ce_loss(medsam_pred, gt2D.float())
-            loss = seg_loss(medsam_pred,gt2D, iou_pred)
+            crohnsam_pred,iou_pred= crohnsam_model(image, point_np,point_label_np)
+            loss = seg_loss(crohnsam_pred,gt2D, iou_pred)
             loss.backward(retain_graph=True)
             optimizer.step()
             optimizer.zero_grad()
@@ -205,51 +288,56 @@ def train():
             f'Time: {datetime.now().strftime("%Y%m%d-%H%M")}, Epoch: {epoch}, Train Loss: {avg_train_loss}'
         )
         writer.add_scalar('Loss/train', train_loss, epoch)
-        medsam_model.eval()
+        crohnsam_model.eval()
         
         val_loss = 0
         with torch.no_grad():
-            for step, (image, gt2D, point,point_label, _) in enumerate(tqdm(valid_dataloader)):
+            for step, (image, gt2D, point,point_label, _) in enumerate(tqdm(validate_dataloader)):
                 point_np = point.detach().cpu().numpy()
                 point_label_np = point_label.detach().cpu().numpy()
                 image, gt2D = image.to(device), gt2D.to(device)
-                medsam_pred,iou_pred = medsam_model(image, point_np,point_label_np)
-                # loss = seg_loss(medsam_pred, gt2D) + ce_loss(medsam_pred, gt2D.float())
-                loss = seg_loss(medsam_pred,gt2D, iou_pred)
+                crohnsam_pred,iou_pred = crohnsam_model(image, point_np,point_label_np)
+                # loss = seg_loss(crohnsam_pred, gt2D) + ce_loss(crohnsam_pred, gt2D.float())
+                loss = seg_loss(crohnsam_pred,gt2D, iou_pred)
                 val_loss += loss.item()
 
-            avg_val_loss = val_loss / len(valid_dataloader)
+            avg_val_loss = val_loss / len(validate_dataloader)
             val_losses.append(avg_val_loss)
             print(
                     f'Time: {datetime.now().strftime("%Y%m%d-%H%M")}, Epoch: {epoch}, Val Loss: {avg_val_loss}'
                 )
             writer.add_scalar('Loss/val', val_loss, epoch)
+        if args.use_wandb:
+            wandb.log({"epoch": epoch, "train_loss": avg_train_loss, "val_loss": avg_val_loss})
+
         ## save the latest model
         checkpoint = {
-            "model": medsam_model.state_dict(),
+            "model": crohnsam_model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "epoch": epoch,
         }
-        torch.save(checkpoint, join(model_save_path, "medsam_model_latest.pth"))
+        torch.save(checkpoint, join(model_save_path, "crohnsam_model_latest.pth"))
         ## save the best model
         if avg_val_loss < best_loss:
             best_loss = avg_val_loss
             patience_counter = 0  
             # Save the best model
             checkpoint = {
-                "model": medsam_model.state_dict(),
+                "model": crohnsam_model.state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "epoch": epoch,
             }
-            torch.save(checkpoint, join(model_save_path, "medsam_model_best.pth"))
+            torch.save(checkpoint, join(model_save_path, "crohnsam_model_best.pth"))
             print(f"Epoch {epoch}: Validation loss improved to {avg_val_loss}. Saving model.")
-        else:
-            patience_counter += 1
-            print(f"Epoch {epoch}: Validation loss did not improve. ({patience_counter}/{patience})")
-
-        if patience_counter >= patience:
-            print(f"Stopping training early at epoch {epoch} due to no improvement in validation loss for {patience} epochs.")
-            break  # Stop the training loop
+        # else:
+        #     patience_counter += 1
+        #     print(f"Epoch {epoch}: Validation loss did not improve. ({patience_counter}/{patience})")
+        if early_stopping(avg_val_loss):
+            print("Early stopping triggered.")
+            break
+        # if patience_counter >= patience:
+        #     print(f"Stopping training early at epoch {epoch} due to no improvement in validation loss for {patience} epochs.")
+        #     break  # Stop the training loop
         plt.figure(figsize=(10, 6))
         plt.plot(train_losses, label='Training Loss')
         plt.plot(val_losses, label='Validation Loss')
@@ -258,9 +346,11 @@ def train():
         plt.ylabel("Loss")
         plt.legend()
         plt.savefig(join(model_save_path, "train_val_loss_plot.png"))
-        plt.show()
+        plt.close()
         print("Training and Validation Losses Plot Saved")
-    
+        scheduler.step()
+    if args.use_wandb:
+        wandb.finish()
     writer.close()
     
 def test():
@@ -271,29 +361,24 @@ def test():
     pre_save_path = join(model_save_path, "visual_test_results")
     os.makedirs(pre_save_path, exist_ok=True)
     
-    best_checkpoint_path = join(model_save_path, "medsam_model_best.pth")
-    # best_checkpoint_path = "work_dir/20240502-2111samvitb_pretrain_img1024_smallimageadapter_64_aug0_newweakcentreline_mask/medsam_model_best.pth"
+    best_checkpoint_path = join(model_save_path, "crohnsam_model_best.pth")
+    # best_checkpoint_path = "work_dir/20240502-2111samvitb_pretrain_img1024_smallimageadapter_64_aug0_newweakcentreline_mask/crohnsam_model_best.pth"
     checkpoint = torch.load(best_checkpoint_path, map_location=device) 
-    medsam_model.load_state_dict(checkpoint['model'])
-    medsam_model.to(device)
-    medsam_model.eval()
-    coronal_dataset_test = NpyDataset('data/centreline_set/coronal/npy/test', augment=False)
-    # axial_dataset_test = NpyDataset('data/centreline_set/axial/npy/test', augment=False)
-    # test_dataset = ConcatDataset([coronal_dataset_test, axial_dataset_test])
-    test_dataloader = DataLoader(coronal_dataset_test, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+    crohnsam_model.load_state_dict(checkpoint['model'])
+    crohnsam_model.to(device)
+    crohnsam_model.eval()
+    
+    test_dataset = NpyDataset(join(args.true_npy_path,args.data_type,'npy','test'), augment=False)
+    
+    test_dataloader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers, pin_memory=True)
+
     print("Number of test samples: ", len(test_dataloader))
     metrics = SegMetrics(metric_names=args.metrics)
-    
-    # with torch.no_grad():
-    #     for step, (image, gt2D, point,point_label, img_names) in enumerate(tqdm(test_dataloader)):
-    #         gt2D = _threshold(gt2D)
-    #         image, gt2D = image.to(device), gt2D.to(device)
-    #         preds, _ = medsam_model(image, point, point_label) 
-    #         metrics.update(preds, gt2D, img_names)
+
     with torch.no_grad():
         for step, (image, gt2D, point, point_label, img_names) in enumerate(tqdm(test_dataloader)):
             image, gt2D = image.to(device), gt2D.to(device)
-            preds, _ = medsam_model(image, point, point_label)  
+            preds, _ = crohnsam_model(image, point, point_label)  
             preds = preds.squeeze(1)  
             preds_np = preds.cpu().detach().numpy()  
             
@@ -329,14 +414,14 @@ def test():
         json.dump(results, f, indent=4)
 
     print("Test Results saved to", os.path.join(model_save_path, 'test_metric.json'))
-
-if __name__ == "__main__":
-    train()
-    test()
     
-    # base_path = 'data/coronal/npy_single'
-    # valid_path = 'data/coronal/npy_single/validation'
-    # test_path = 'data/coronal/npy_single/test'
+    
+if __name__ == "__main__":
+    # train()
+    test()
+    # base_path = 'data/axial/npy_single'
+    # valid_path = 'data/axial/npy_single/validation'
+    # test_path = 'data/axial/npy_single/test'
 
     # folders = ['imgs', 'gts', 'centreline']
 
@@ -349,9 +434,9 @@ if __name__ == "__main__":
         
 
     #     for filename in os.listdir(src_folder):
-    #         if 'A104 ' in filename or 'A110 ' in filename or 'I1 ' in filename\
-    #             or 'I11 ' in filename or 'I103 ' in filename or 'I113 ' in filename\
-    #             or 'I16 ' in filename or 'I3 ' in filename :
+    #         if 'A101 ' in filename or 'A107 ' in filename or 'I114 ' in filename\
+    #             or 'I102 ' in filename or 'I108 ' in filename or 'A113 ' in filename\
+    #             or 'I120 ' in filename :
     #             src_file = os.path.join(src_folder, filename)
     #             valid_file = os.path.join(valid_folder, filename)
     #             shutil.move(src_file, valid_file)

@@ -6,7 +6,7 @@
 
 import torch
 from functools import partial
-from .modeling import ImageEncoderViT, MaskDecoder, PromptEncoder, Sam, TwoWayTransformer
+from .modeling import ImageEncoderViT, MaskDecoder, PromptEncoder, Sam, TwoWayTransformer, ImageEncoderViTWithParallelBranch, MaskDecoderWithParallelBranch, ParallelCNNBranch,ResNetFirstStage
 from torch.nn import functional as F
 
 def build_sam_vit_h(args):
@@ -18,6 +18,8 @@ def build_sam_vit_h(args):
         image_size=args.image_size,
         checkpoint=args.sam_checkpoint,
         encoder_adapter = args.encoder_adapter,
+        reduce_ratio = args.reduce_ratio
+        
     )
 
 
@@ -33,20 +35,45 @@ def build_sam_vit_l(args):
         image_size=args.image_size,
         checkpoint=args.sam_checkpoint,
         encoder_adapter = args.encoder_adapter,
+        reduce_ratio = args.reduce_ratio
     )
 
 
 def build_sam_vit_b(args):
-    return _build_sam(
-        encoder_embed_dim=768,
-        encoder_depth=12,
-        encoder_num_heads=12,
-        encoder_global_attn_indexes=[2, 5, 8, 11],
-        image_size=args.image_size,
-        checkpoint=args.sam_checkpoint,
-        encoder_adapter = args.encoder_adapter,
-
-    )
+    if not args.parallel_cnn:
+        return _build_sam(
+            encoder_embed_dim=768,
+            encoder_depth=12,
+            encoder_num_heads=12,
+            encoder_global_attn_indexes=[2, 5, 8, 11],
+            image_size=args.image_size,
+            checkpoint=args.sam_checkpoint,
+            encoder_adapter = args.encoder_adapter,
+            reduce_ratio = args.reduce_ratio,
+            adapter_mlp_ratio = args.adapter_mlp_ratio,
+        )
+    else:
+        return _build_sam_parrallel_cnn(
+            encoder_embed_dim=768,
+            encoder_depth=12,
+            encoder_num_heads=12,
+            encoder_global_attn_indexes=[2, 5, 8, 11],
+            image_size=args.image_size,
+            checkpoint=args.sam_checkpoint,
+            encoder_adapter = args.encoder_adapter,
+            reduce_ratio = args.reduce_ratio,
+        )
+        # return _build_sam_parallel_cnn_mask_from_scratch(
+        #     encoder_embed_dim=768,
+        #     encoder_depth=12,
+        #     encoder_num_heads=12,
+        #     encoder_global_attn_indexes=[2, 5, 8, 11],
+        #     image_size=args.image_size,
+        #     checkpoint=args.sam_checkpoint,
+        #     encoder_adapter = args.encoder_adapter,
+        #     reduce_ratio = args.reduce_ratio,
+        # )
+        
 
 
 sam_model_registry = {
@@ -65,6 +92,8 @@ def _build_sam(
     image_size,
     checkpoint,
     encoder_adapter,
+    reduce_ratio,
+    adapter_mlp_ratio,
 ):
     prompt_embed_dim = 256
     image_size = image_size
@@ -85,6 +114,8 @@ def _build_sam(
             window_size=14,
             out_chans=prompt_embed_dim,
             adapter_train = encoder_adapter,
+            reduce_ratio=reduce_ratio,
+            adapter_mlp_ratio=adapter_mlp_ratio,
         ),
         prompt_encoder=PromptEncoder(
             embed_dim=prompt_embed_dim,
@@ -128,7 +159,173 @@ def _build_sam(
         
     return sam
 
+def _build_sam_parrallel_cnn(
+    encoder_embed_dim,
+    encoder_depth,
+    encoder_num_heads,
+    encoder_global_attn_indexes,
+    image_size,
+    checkpoint,
+    encoder_adapter,
+    reduce_ratio
+):
+    prompt_embed_dim = 256
+    image_size = image_size
+    vit_patch_size = 16
+    image_embedding_size = image_size // vit_patch_size
+    
+    parallel_cnn_branch = ResNetFirstStage(input_channels=3, output_channels=256)
+    # parallel_cnn_branch = ParallelCNNBranch(input_channels=3)
+    image_encoder = ImageEncoderViTWithParallelBranch(
+        parallel_cnn_branch=parallel_cnn_branch,
+        depth=encoder_depth,
+        embed_dim=encoder_embed_dim,
+        img_size=image_size,
+        mlp_ratio=4,
+        norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
+        num_heads=encoder_num_heads,
+        patch_size=vit_patch_size,
+        qkv_bias=True,
+        use_rel_pos=True,
+        global_attn_indexes=encoder_global_attn_indexes,
+        window_size=14,
+        out_chans=prompt_embed_dim,
+        adapter_train=encoder_adapter,
+        reduce_ratio=reduce_ratio,
+    )
+    
+    prompt_encoder = PromptEncoder(
+        embed_dim=prompt_embed_dim,
+        image_embedding_size=(image_embedding_size, image_embedding_size),
+        input_image_size=(image_size, image_size),
+        mask_in_chans=16,
+    )
+    
+    mask_decoder = MaskDecoder(
+        num_multimask_outputs=3,
+        transformer=TwoWayTransformer(
+            depth=2,
+            embedding_dim=prompt_embed_dim,
+            mlp_dim=2048,
+            num_heads=8,
+        ),
+        transformer_dim=prompt_embed_dim,
+        iou_head_depth=3,
+        iou_head_hidden_dim=256
+    )
+    
+    sam = Sam(
+        image_encoder=image_encoder,
+        prompt_encoder=prompt_encoder,
+        mask_decoder=mask_decoder,
+        pixel_mean=[123.675, 116.28, 103.53],
+        pixel_std=[58.395, 57.12, 57.375],
+    )
+    
+    if checkpoint is not None:
+        with open(checkpoint, "rb") as f:
+            state_dict = torch.load(f, map_location="cpu")
+        try:
+            if 'model' in state_dict.keys():
+                print(encoder_adapter)
+                sam.load_state_dict(state_dict['model'], False)
+            else:
+                if image_size==1024 and encoder_adapter==True:
+                    sam.load_state_dict(state_dict, False)
+                else:
+                    sam.load_state_dict(state_dict)
+        except:
+            print('*******interpolate')
+            new_state_dict = load_from(sam, state_dict, image_size, vit_patch_size)   
+            sam.load_state_dict(new_state_dict)
+        print(f"*******load {checkpoint}")
+        
+    return sam
 
+def _build_sam_parallel_cnn_mask_from_scratch(
+    encoder_embed_dim,
+    encoder_depth,
+    encoder_num_heads,
+    encoder_global_attn_indexes,
+    image_size,
+    checkpoint,
+    encoder_adapter,
+    reduce_ratio
+):
+    prompt_embed_dim = 256
+    image_size = image_size
+    vit_patch_size = 16
+    image_embedding_size = image_size // vit_patch_size
+    
+    parallel_cnn_branch = ParallelCNNBranch(input_channels=3)
+    image_encoder = ImageEncoderViTWithParallelBranch(
+        parallel_cnn_branch=parallel_cnn_branch,
+        depth=encoder_depth,
+        embed_dim=encoder_embed_dim,
+        img_size=image_size,
+        mlp_ratio=4,
+        norm_layer=partial(torch.nn.LayerNorm, eps=1e-6),
+        num_heads=encoder_num_heads,
+        patch_size=vit_patch_size,
+        qkv_bias=True,
+        use_rel_pos=True,
+        global_attn_indexes=encoder_global_attn_indexes,
+        window_size=14,
+        out_chans=prompt_embed_dim,
+        adapter_train=encoder_adapter,
+        reduce_ratio=reduce_ratio,
+    )
+    
+    prompt_encoder = PromptEncoder(
+        embed_dim=prompt_embed_dim,
+        image_embedding_size=(image_embedding_size, image_embedding_size),
+        input_image_size=(image_size, image_size),
+        mask_in_chans=16,
+    )
+    
+    mask_parallel_branch = MaskDecoderWithParallelBranch(
+        num_multimask_outputs=3,
+        transformer=TwoWayTransformer(
+            depth=2,
+            embedding_dim=prompt_embed_dim,
+            mlp_dim=2048,
+            num_heads=8,
+        ),
+        transformer_dim=prompt_embed_dim,
+        iou_head_depth=3,
+        iou_head_hidden_dim=256
+    )
+    
+    sam = Sam(
+        image_encoder=image_encoder,
+        prompt_encoder=prompt_encoder,
+        mask_decoder=mask_parallel_branch,
+        pixel_mean=[123.675, 116.28, 103.53],
+        pixel_std=[58.395, 57.12, 57.375],
+    )
+    
+    if checkpoint is not None:
+        with open(checkpoint, "rb") as f:
+            state_dict = torch.load(f, map_location="cpu")
+        try:
+            if 'model' in state_dict.keys():
+                print(encoder_adapter)
+                state_dict = state_dict['model']
+            
+            # Remove the mask decoder parameters from the state_dict
+            state_dict = {k: v for k, v in state_dict.items() if 'mask_decoder' not in k}
+            
+            if image_size == 1024 and encoder_adapter:
+                sam.load_state_dict(state_dict, False)
+            else:
+                sam.load_state_dict(state_dict)
+        except:
+            print('*******interpolate')
+            new_state_dict = load_from(sam, state_dict, image_size, vit_patch_size)
+            sam.load_state_dict(new_state_dict)
+        print(f"*******load {checkpoint}")
+        
+    return sam
 def load_from(sam, state_dicts, image_size, vit_patch_size):
 
     sam_dict = sam.state_dict()

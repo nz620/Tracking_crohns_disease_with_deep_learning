@@ -10,8 +10,8 @@ from torch.nn import functional as F
 
 from typing import Any, Dict, List, Tuple
 
-from .image_encoder import ImageEncoderViT
-from .mask_decoder import MaskDecoder
+from .image_encoder import ImageEncoderViT,ImageEncoderViTWithParallelBranch
+from .mask_decoder import MaskDecoder, MaskDecoderWithParallelBranch
 from .prompt_encoder import PromptEncoder
 
 
@@ -130,7 +130,7 @@ class Sam(nn.Module):
                 }
             )
         return outputs
-
+    
     def postprocess_masks(
         self,
         masks: torch.Tensor,
@@ -172,3 +172,57 @@ class Sam(nn.Module):
         padw = self.image_encoder.img_size - w
         x = F.pad(x, (0, padw, 0, padh))
         return x
+
+
+class SamWithParallelBranch(Sam):
+    def __init__(
+        self,
+        image_encoder: ImageEncoderViTWithParallelBranch,
+        prompt_encoder: PromptEncoder,
+        mask_decoder: MaskDecoder,
+        pixel_mean: List[float] = [0.14297773, 0.14297773, 0.14297773],
+        pixel_std: List[float] = [0.23879515, 0.23879515, 0.23879515],
+    ) -> None:
+        super().__init__(image_encoder, prompt_encoder, mask_decoder, pixel_mean, pixel_std)
+
+    @torch.no_grad()
+    def forward(
+        self,
+        batched_input: List[Dict[str, Any]],
+        multimask_output: bool,
+    ) -> List[Dict[str, torch.Tensor]]:
+        input_images = torch.stack([self.preprocess(x["image"]) for x in batched_input], dim=0)
+        image_embeddings = self.image_encoder(input_images)
+
+        outputs = []
+        for image_record, curr_embedding in zip(batched_input, image_embeddings):
+            if "point_coords" in image_record:
+                points = (image_record["point_coords"], image_record["point_labels"])
+            else:
+                points = None
+            sparse_embeddings, dense_embeddings = self.prompt_encoder(
+                points=points,
+                boxes=image_record.get("boxes", None),
+                masks=image_record.get("mask_inputs", None),
+            )
+            low_res_masks, iou_predictions = self.mask_decoder(
+                image_embeddings=curr_embedding.unsqueeze(0),
+                image_pe=self.prompt_encoder.get_dense_pe(),
+                sparse_prompt_embeddings=sparse_embeddings,
+                dense_prompt_embeddings=dense_embeddings,
+                multimask_output=multimask_output,
+            )
+            masks = self.postprocess_masks(
+                low_res_masks,
+                input_size=image_record["image"].shape[-2:],
+                original_size=image_record["original_size"],
+            )
+            masks = masks > self.mask_threshold
+            outputs.append(
+                {
+                    "masks": masks,
+                    "iou_predictions": iou_predictions,
+                    "low_res_logits": low_res_masks,
+                }
+            )
+        return outputs

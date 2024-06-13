@@ -1,47 +1,38 @@
-import json
+
 import numpy as np
-import matplotlib.pyplot as plt
-import os
-from loss import FocalDiceloss_IoULoss
-from metrics import SegMetrics, _threshold
-from tqdm import tqdm
-from skimage import transform
 import torch
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader,random_split,ConcatDataset
-import monai
-from sam_med2d import sam_model_registry
-import torch.nn.functional as F
-import argparse
-import random
-from datetime import datetime
-import shutil
-import glob
-import re
 from utils.display_helper import show_mask, show_points, show_box
-import cv2
+import SimpleITK as sitk
 
 
 
 
+def morphological_processing_3d(preds, device, kernel_type=sitk.sitkBall, kernel_radius=(7, 7, 7), safe_border=True):
+    # Ensure preds is a NumPy array
+    if isinstance(preds, torch.Tensor):
+        preds_np = preds.cpu().numpy()
+    else:
+        preds_np = preds
 
-class Postprocess():
-    def __init__(
-        self, 
-        hole_filling_kernel_size=3,
-        holee_filling_iterations=3,
-        hole_filling_majority_threshold=1,
-        morphological_closing_kernel_size=7):
-        
-        self.hole_filling_kernel_size = hole_filling_kernel_size
-        self.holee_filling_iterations = holee_filling_iterations
-        self.hole_filling_majority_threshold = hole_filling_majority_threshold
-        self.morphological_closing_kernel_size = morphological_closing_kernel_size
-        self.kerne_h = np.ones((self.hole_filling_kernel_size, self.hole_filling_kernel_size), np.uint8)
-        self.kernel_m = np.ones((self.morphological_closing_kernel_size, self.morphological_closing_kernel_size), np.uint8)
-    def postprocess_mask(self, mask):
-        mask = self.fill_holes(mask)
-        mask = self.morphological_closing(mask)
-        return mask
+    # Apply binary closing and opening filters
+    closing_filter = sitk.BinaryMorphologicalClosingImageFilter()
+    closing_filter.SetSafeBorder(safe_border)
+    closing_filter.SetKernelRadius(kernel_radius)
+    closing_filter.SetKernelType(kernel_type)
+
+    opening_filter = sitk.BinaryMorphologicalOpeningImageFilter()
+    opening_filter.SetKernelType(kernel_type)
+    opening_filter.SetKernelRadius(kernel_radius)
+
+    # Convert 3D numpy array to SimpleITK Image, process it, and convert it back to numpy
+    preds_sitk = sitk.GetImageFromArray(preds_np.astype(np.uint8), isVector=False)
+    closed_preds = closing_filter.Execute(preds_sitk)
+    opened_preds = opening_filter.Execute(closed_preds)
+    smoothed_preds_np = sitk.GetArrayFromImage(opened_preds)
+
+    # Convert back to PyTorch tensor
+    smoothed_preds = torch.tensor(smoothed_preds_np, dtype=torch.float32, device=device)
+
+    return smoothed_preds
     
         

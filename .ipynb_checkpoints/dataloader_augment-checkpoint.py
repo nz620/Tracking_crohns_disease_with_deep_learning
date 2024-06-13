@@ -83,7 +83,7 @@ def rotate_and_crop_image(image, gt, points, angle):
 
 def apply_augmentations(img, gt, centreline):
     if random.random() < 0.2:
-        # rotation
+        # Scaling and rotation
         angle = random.uniform(-180, 180)  # Angle for rotation
         img, gt, centreline = rotate_and_crop_image(img, gt, centreline, angle)
 
@@ -117,7 +117,7 @@ class NpyDataset(Dataset):
         self.gt_path = join(data_root, "gts")
         self.img_path = join(data_root, "imgs")
         self.centreline_path = join(data_root, "centreline")
-        self.generated_centreilne_path = join(data_root, "centreline_generated")
+        self.generated_centreilne_path = join(data_root, "centreline_single")
         self.gt_path_files = sorted(
             glob.glob(join(self.gt_path, "**/*.npy"), recursive=True)
         )
@@ -180,9 +180,24 @@ class NpyDataset(Dataset):
 
         
 if __name__ == "__main__":
-    coronal_dataset_fold0 = NpyDataset('data/pseudo_data/axial/npy2023_test',augment=False,aug_num=1,complete_centreline=False)
+    coronal_dataset_fold0 = NpyDataset('data/centreline_set/coronal/npy2023_5_folds/fold_0',augment=True,aug_num=1,complete_centreline=True)
 
-   
+    # train_dataset = []
+    # val_dataset = []
+    
+    # for step, (image, gt2D, point,point_label, image_name) in enumerate(tqdm(coronal_dataset)):
+    #     match = re.match(r'^(A3|A79|I58)[^\.]*\.npy$', image_name) # Axial A5|A97|I59  ##coronal A3 A79 I58
+    #     if match:
+    #         val_dataset.append((image, gt2D, point,point_label, image_name))
+    #     else:
+    #         train_dataset.append((image, gt2D, point,point_label, image_name))   
+    # print('match coronal')     
+    # # Split dataset into training and validation
+    # train_size = int(0.8 * len(full_dataset))
+    # val_size = len(full_dataset) - train_size
+    # train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
+
+    # Create DataLoaders for training and validation sets
     train_dataloader_fold0 = DataLoader(coronal_dataset_fold0, batch_size=1, shuffle=False, num_workers=1, pin_memory=True)
    
    
@@ -190,13 +205,12 @@ if __name__ == "__main__":
     for step, (image, gt, centreline,centreline_label,bbox,names_temp) in enumerate(train_dataloader_fold0):
         # print(image.shape, gt.shape, centreline.shape)
         # show the example
-        _, axs = plt.subplots(1, 2, figsize=(12, 12))
+        _, axs = plt.subplots(1, 2, figsize=(25, 25))
         idx = 0
-        axs[0].imshow(image[idx].cpu().permute(1, 2, 0).numpy(),cmap = 'gray')
-        # show_mask(gt[idx].cpu().numpy(), axs[0])
+        axs[0].imshow(image[idx].cpu().permute(1, 2, 0).numpy())
+        show_mask(gt[idx].cpu().numpy(), axs[0])
         # Iterate through each pair of points in the centreline array
         show_points(centreline[idx].cpu().numpy(), centreline_label[0].numpy(), axs[0])
-        show_mask(gt[idx].cpu().numpy(), axs[0])
         # for i in range(bbox[idx].shape[0]):
         #     show_box(bbox[idx][i].cpu().numpy(), axs[0])
         
@@ -214,10 +228,12 @@ if __name__ == "__main__":
         axs[1].set_title(names_temp[idx])
 
         plt.subplots_adjust(wspace=0.01, hspace=0)
-        svaed_path = os.path.join("sanitytest_axial_pseudo", "data_sanitycheck"+str(names_temp)+str(step)+".png")
-        if not os.path.exists("sanitytest_5fold_test"):
-            os.makedirs("sanitytest_5fold_test")
+        svaed_path = os.path.join("sanitytest_5fold", "data_sanitycheck"+str(names_temp)+str(step)+".png")
+        if not os.path.exists("sanitytest_5fold"):
+            os.makedirs("sanitytest_5fold")
         plt.savefig(svaed_path, bbox_inches="tight", dpi=100)
         print(f"Saved to {svaed_path}")
         plt.close()
+        if step == 20:
+            break
     

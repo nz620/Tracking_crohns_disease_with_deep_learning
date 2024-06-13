@@ -13,66 +13,9 @@ from skimage.morphology import skeletonize_3d,remove_small_objects
 from skimage.measure import label, regionprops
 from scipy.ndimage import binary_dilation
 from scipy.ndimage import binary_opening, binary_closing
-
-
-class Preprocessor:
-    def __init__(
-        self,
-        # N4 Bias Field Parameters
-        n4_convergence_threshold=0.001,
-        n4_max_num_of_iterations=(50, 50, 50, 50),
-        n4_bias_field_full_width_at_half_max=0.15,
-        n4_wiener_filter_noise=0.01,
-        n4_num_of_histogram_bins=200,
-        n4_num_of_control_points=(4, 4, 4),
-        n4_spline_order=3,
-
-        # Denoising (curvature flow) parameters
-        cflow_timestep=0.05,
-        cflow_num_of_iterations=5,
-
-    ):
-        # Hyper-parameters
-        self.n4_convergence_threshold = n4_convergence_threshold
-        self.n4_max_num_of_iterations = n4_max_num_of_iterations
-        self.n4_bias_field_full_width_at_half_max = n4_bias_field_full_width_at_half_max
-        self.n4_wiener_filter_noise = n4_wiener_filter_noise
-        self.n4_num_of_histogram_bins = n4_num_of_histogram_bins
-        self.n4_num_of_control_points = n4_num_of_control_points
-        self.n4_spline_order = n4_spline_order
-        self.cflow_timestep = cflow_timestep
-        self.cflow_num_of_iterations = cflow_num_of_iterations
-
-        
-    def preprocess(self, img):
-        # Create the filter of CastImageFilter
-        myFilterCastImage = CastImageFilter()
-
-        # Set output pixel type (float32)
-        myFilterCastImage.SetOutputPixelType(sitk.sitkFloat32)
-        input_image = myFilterCastImage.Execute(img)
-
-        # Apply N4 bias field correction to the image
-        n4_correction = sitk.N4BiasFieldCorrectionImageFilter()
-        n4_correction.SetConvergenceThreshold(self.n4_convergence_threshold)
-        n4_correction.SetMaximumNumberOfIterations(self.n4_max_num_of_iterations)
-        n4_correction.SetBiasFieldFullWidthAtHalfMaximum(self.n4_bias_field_full_width_at_half_max)
-        n4_correction.SetWienerFilterNoise(self.n4_wiener_filter_noise)
-        n4_correction.SetNumberOfHistogramBins(self.n4_num_of_histogram_bins)
-        n4_correction.SetNumberOfControlPoints(self.n4_num_of_control_points)
-        n4_correction.SetSplineOrder(self.n4_spline_order)
-        corrected_img = n4_correction.Execute(input_image)
-
-        # Denoising using curvature driven flow
-        cflow = sitk.CurvatureFlowImageFilter()
-        cflow.SetTimeStep(self.cflow_timestep)
-        cflow.SetNumberOfIterations(self.cflow_num_of_iterations)
-        denoised_img = cflow.Execute(corrected_img)
-
-        # Laplacian sharpening
-        lp_sharp = sitk.LaplacianSharpeningImageFilter()
-        sharpened_edges_image = lp_sharp.Execute(denoised_img)
-        return sharpened_edges_image
+from skimage.morphology import skeletonize
+from skimage.morphology import medial_axis,label
+from scipy.ndimage import find_objects
 
 
 def overwrite_labels(src_folder, target_folder, OnlyTI=False, OnlyATI=False):
@@ -115,7 +58,6 @@ def overwrite_labels(src_folder, target_folder, OnlyTI=False, OnlyATI=False):
         new_file_path = os.path.join(target_folder, filename)
         sitk.WriteImage(seg_new, new_file_path)
         
-
 def tidy_folder(source_folder,target_folder):
     # Paths for the 'seg' and 'image' subfolders
     seg_folder = os.path.join(target_folder, 'seg')
@@ -195,203 +137,58 @@ def tidy_plane(source_directory, target_directory, type='img'):
         print(f'Copied "{filename}" to "{sub_target_directory}"')
         
 
-class Generate_centreline_points:
-    """
-    Generate centreline points from the segmentation mask.
-    """
-    def __init__(self, seg_folder, output_folder, margin=5):
-        self.seg_folder = seg_folder
-        self.output_folder = output_folder
-        self.margin = margin  # Margin to exclude points near the segment edges
 
-    def generate_centreline(self):
-        """
-        Generate centreline points from the segmentation mask.
-        """
-        os.makedirs(self.output_folder, exist_ok=True)
-        for filename in os.listdir(self.seg_folder):
-            seg_path = os.path.join(self.seg_folder, filename)
-            seg = sitk.ReadImage(seg_path)
-            seg_arr = sitk.GetArrayFromImage(seg)
+# class Generate_single_centreline_points:
+#     """
+#     Generate a single centreline point from the segmentation mask, which represents the centroid of the segment.
+#     """
+#     def __init__(self, seg_folder, output_folder):
+#         self.seg_folder = seg_folder
+#         self.output_folder = output_folder
 
-            centreline_points = self._generate_centreline_points(seg_arr)
+#     def generate_centreline(self):
+#         """
+#         Generate centreline points from the segmentation mask.
+#         """
+#         os.makedirs(self.output_folder, exist_ok=True)
+#         for filename in os.listdir(self.seg_folder):
+#             seg_path = os.path.join(self.seg_folder, filename)
+#             seg = sitk.ReadImage(seg_path)
+#             seg_arr = sitk.GetArrayFromImage(seg)
 
-            output_filename = filename.replace('.nii.gz', '.txt')
-            output_path = os.path.join(self.output_folder, output_filename)
-            with open(output_path, 'w') as file:
-                for point in centreline_points:
-                    file.write(f'{point[0]} {point[1]} {point[2]}\n')
+#             centreline_points = self._generate_centreline_points(seg_arr)
 
-    def _generate_centreline_points(self, seg_arr):
-        centreline_points = []
-        for slice_idx in tqdm.tqdm(range(seg_arr.shape[0])):
-            slice = seg_arr[slice_idx]
-            points = self._find_centreline_points(slice)
-            for point in points:
-                centreline_points.append((slice_idx, point[0], point[1]))
-        return centreline_points
+#             output_filename = filename.replace('.nii.gz', '.txt')
+#             output_path = os.path.join(self.output_folder, output_filename)
+#             with open(output_path, 'w') as file:
+#                 for point in centreline_points:
+#                     file.write(f'{point[0]} {point[1]} {point[2]}\n')
 
-    def _find_centreline_points(self, slice):
-        centreline_points = []
-        for row_idx, row in enumerate(slice):
-            points = self._find_centreline_points_in_row(row)
-            centreline_points.extend([(row_idx, col_idx) for col_idx in points])
-        return centreline_points
-
-    def _find_centreline_points_in_row(self, row):
-        """
-        Locate the center points of contiguous segments of white (1's) in a row,
-        excluding the margins at both ends of each segment.
-        """
-        centre_points = []
-        in_segment = False
-        start = 0
-
-        for i, val in enumerate(row):
-            if val == 1 and not in_segment:
-                start = i
-                in_segment = True
-            elif val == 0 and in_segment:
-                end = i
-                # Apply the margin to the start and end
-                segment_center = (max(start + self.margin, 0) + min(end - self.margin, len(row))) // 2
-                if max(start + self.margin, 0) < min(end - self.margin, len(row)):
-                    centre_points.append(segment_center)
-                in_segment = False
-        if in_segment:
-            end = len(row)
-            segment_center = (max(start + self.margin, 0) + min(end - self.margin, len(row))) // 2
-            if max(start + self.margin, 0) < min(end - self.margin, len(row)):
-                centre_points.append(segment_center)
-
-        return centre_points
-
-
-    """
-    Generate centreline points from the segmentation mask.
-    """
-
-    def __init__(self, seg_folder, output_folder):
-        self.seg_folder = seg_folder
-        self.output_folder = output_folder
-
-    def generate_centreline(self):
-        """
-        Generate centreline points from the 3D segmentation mask using skeletonization.
-        """
-        os.makedirs(self.output_folder, exist_ok=True)
-        for filename in tqdm.tqdm(os.listdir(self.seg_folder)):
-            seg_path = os.path.join(self.seg_folder, filename)
-            seg = sitk.ReadImage(seg_path)
-            seg_arr = sitk.GetArrayFromImage(seg)
-            seg_skeleton = skeletonize_3d(seg_arr)
-            seg_skeleton = self._prune_skeleton(seg_skeleton, 10)  # adjust min_size as needed
-
-            centreline_points = self._extract_centreline_points(seg_skeleton)
-            output_filename = filename.replace('.nii.gz', '.txt')
-            output_path = os.path.join(self.output_folder, output_filename)
-            with open(output_path, 'w') as file:
-                for point in centreline_points:
-                    file.write(f'{point[0]} {point[1]} {point[2]}\n')
-    def _prune_skeleton(seg_skeleton, min):
-        """
-        Remove small objects from the skeleton to reduce noise.
-        """
-        cleaned_skeleton = remove_small_objects(seg_skeleton, min_size=min, connectivity=3)
-        return cleaned_skeleton
-    def _extract_centreline_points(self, seg_skeleton):
-        """
-        Extract centreline points from the 3D skeletonized array.
-        """
-        centreline_points = []
-        # Get the indices of non-zero elements (i.e., skeleton points)
-        z_indices, y_indices, x_indices = np.nonzero(seg_skeleton)
-        for z, y, x in zip(z_indices, y_indices, x_indices):
-            centreline_points.append((z, y, x))
-        return centreline_points
-
-
-class Generate3DCentreline:
-    """
-    Generate a 3D centerline for segmented tubular structures, with options to downsample points per slice.
-    """
-
-    def __init__(self, seg_folder, output_folder, sampling_rate=1,min_size=6):
-        self.seg_folder = seg_folder
-        self.output_folder = output_folder
-        self.sampling_rate = sampling_rate  
-        self.min_size = min_size
-
-    def generate_centerline(self):
-        """
-        Process each segmentation file to extract and optionally sample the centerline.
-        """
-        os.makedirs(self.output_folder, exist_ok=True)
-        for filename in tqdm.tqdm(os.listdir(self.seg_folder)):
-            seg_path = os.path.join(self.seg_folder, filename)
-            seg = sitk.ReadImage(seg_path)
-            seg_array = sitk.GetArrayFromImage(seg)
+#     def _generate_centreline_points(self, seg_arr):
+#         """
+#         Generate the centre point for each connected component in the segmentation array.
+#         """
+#         centreline_points = []
+#         for slice_idx in tqdm.tqdm(range(seg_arr.shape[0])):
+#             slice = seg_arr[slice_idx]
+#             labeled_image = sitk.ConnectedComponent(sitk.GetImageFromArray(slice))
             
-            # Ensure the segmentation is boolean
-            seg_array = seg_array > 0
-            
-            # Skeletonize
-            skeleton = skeletonize_3d(seg_array)
-            # skeleton = self.prune_skeleton(skeleton)
+#             # Use LabelShapeStatisticsImageFilter to find centroids
+#             label_shape_filter = sitk.LabelShapeStatisticsImageFilter()
+#             label_shape_filter.Execute(labeled_image)
+#             num_features = label_shape_filter.GetNumberOfLabels()
 
-            # Extract centerline points from the skeleton
-            centreline_points = self.extract_centreline_points(skeleton)
+#             if num_features > 0:
+#                 for label in range(1, num_features + 1):
+#                     # Find the centroid of each label
+#                     centroid = label_shape_filter.GetCentroid(label)
+#                     centreline_points.append((slice_idx, int(centroid[1]), int(centroid[0])))  # Ensure x, y are in correct order
 
-            # Save centerline points to a txt file
-            output_filename = filename.replace('.nii.gz', '.txt')
-            output_path = os.path.join(self.output_folder, output_filename)
-            with open(output_path, 'w') as file:
-                for point in centreline_points:
-                    file.write(f'{point[0]} {point[1]} {point[2]}\n')
+#         return centreline_points
 
-    def extract_centreline_points(self, skeleton):
-        """
-        Extract the coordinates of all non-zero points in the skeleton, applying sampling to reduce density.
-        """
-        centreline_points = []
-        z_indices, y_indices, x_indices = np.nonzero(skeleton)
-        previous_slice = -1
-        slice_points = []
-
-        for z, y, x in sorted(zip(z_indices, y_indices, x_indices)):
-            if z != previous_slice:
-                if slice_points:
-                    centreline_points.extend(slice_points[::self.sampling_rate])
-                slice_points = []
-                previous_slice = z
-            slice_points.append((z, y, x))
-        
-        if slice_points:  # Add remaining points from the last slice
-            centreline_points.extend(slice_points[::self.sampling_rate])
-
-        return centreline_points
-    
-    def prune_skeleton(self, skeleton):
-        """
-        Prune the skeleton to remove noise and small branches.
-        """
-        # Convert to boolean if not already
-        skeleton_bool = skeleton > 0
-
-        # Apply morphological opening to remove small objects
-        pruned = binary_opening(skeleton_bool, structure=np.ones((3,3,3)))
-
-        # Remove small objects based on a size threshold
-        pruned = remove_small_objects(pruned, min_size=self.min_size, connectivity=2)
-
-        # Optionally: additional pruning logic here, such as removing dangling ends or short branches
-
-        return pruned
-
-
-class Generate_single_centreline_points:
+class GenerateCentrelinePoints:
     """
-    Generate a single centreline point from the segmentation mask, which represents the centroid of the segment.
+    Generate a single centreline point from each segmentation within the mask, representing the centroid of the segment.
     """
     def __init__(self, seg_folder, output_folder):
         self.seg_folder = seg_folder
@@ -399,7 +196,7 @@ class Generate_single_centreline_points:
 
     def generate_centreline(self):
         """
-        Generate centreline points from the segmentation mask.
+        Generate centreline points from the segmentation mask for each disconnected component.
         """
         os.makedirs(self.output_folder, exist_ok=True)
         for filename in os.listdir(self.seg_folder):
@@ -417,53 +214,120 @@ class Generate_single_centreline_points:
 
     def _generate_centreline_points(self, seg_arr):
         """
-        Generate the centre point for each connected component in the segmentation array.
+        Generate the centre points using the medial axis for each connected component in the segmentation array.
         """
         centreline_points = []
         for slice_idx in tqdm.tqdm(range(seg_arr.shape[0])):
             slice = seg_arr[slice_idx]
-            labeled_image = sitk.ConnectedComponent(sitk.GetImageFromArray(slice))
-            
-            # Use LabelShapeStatisticsImageFilter to find centroids
-            label_shape_filter = sitk.LabelShapeStatisticsImageFilter()
-            label_shape_filter.Execute(labeled_image)
-            num_features = label_shape_filter.GetNumberOfLabels()
+            if np.any(slice): 
+                labeled_slice, num_features = label(slice, return_num=True, connectivity=2)
 
-            if num_features > 0:
-                for label in range(1, num_features + 1):
-                    # Find the centroid of each label
-                    centroid = label_shape_filter.GetCentroid(label)
-                    centreline_points.append((slice_idx, int(centroid[1]), int(centroid[0])))  # Ensure x, y are in correct order
+                for i in range(1, num_features + 1):  # Process each component
+                    component = labeled_slice == i
+                    skeleton, distance = medial_axis(component, return_distance=True)
+                    
+                    max_dist = distance.max()
+                    central_points = np.argwhere(distance == max_dist)
+
+                    if central_points.size > 0:
+                        idx = len(central_points)//2
+                        central_point = central_points[idx]
+                        centreline_points.append((slice_idx, int(central_point[0]), int(central_point[1])))
 
         return centreline_points
 
+# class GenerateCentrelinePoints:
+#     def __init__(self, seg_folder, output_folder, viz_folder):
+#         self.seg_folder = seg_folder
+#         self.output_folder = output_folder
+#         self.viz_folder = viz_folder  # Folder to save visualizations
 
+#     def generate_centreline(self):
+#         os.makedirs(self.output_folder, exist_ok=True)
+#         os.makedirs(self.viz_folder, exist_ok=True)
+#         for filename in os.listdir(self.seg_folder):
+#             seg_path = os.path.join(self.seg_folder, filename)
+#             seg = sitk.ReadImage(seg_path)
+#             seg_arr = sitk.GetArrayFromImage(seg)
+
+#             centreline_points, visualizations = self._generate_centreline_points(seg_arr)
+
+#             output_filename = filename.replace('.nii.gz', '.txt')
+#             output_path = os.path.join(self.output_folder, output_filename)
+#             with open(output_path, 'w') as file:
+#                 for point in centreline_points:
+#                     file.write(f'{point[0]} {point[1]} {point[2]}\n')
+#             for idx, (viz, points) in enumerate(zip(visualizations, centreline_points)):
+#                 fig, axs = plt.subplots(1, 3, figsize=(10, 6))
+#                 show_mask(viz[0], axs[0])
+#                 axs[0].axis('off')
+                
+#                 show_mask(viz[0], axs[1])
+#                 show_mask(viz[1], axs[1],random_color=True)
+#                 axs[1].axis('off')
+                
+#                 show_mask(viz[0], axs[2])
+#                 axs[2].scatter(points[2], points[1], color='red', s=10)  # Plot the center point
+#                 axs[2].axis('off')
+#                 fig.tight_layout
+
+#                 plt.savefig(os.path.join(self.viz_folder, f'{filename}_slice_{idx}.png'))
+                
+#                 plt.close()
+
+
+#     def _generate_centreline_points(self, seg_arr):
+#         centreline_points = []
+#         visualizations = []
+#         for slice_idx in tqdm.tqdm(range(seg_arr.shape[0])):
+#             slice = seg_arr[slice_idx]
+#             if np.any(slice):
+#                 labeled_slice, num_features = label(slice, return_num=True, connectivity=2)
+#                 for i in range(1, num_features + 1):
+#                     component = labeled_slice == i
+#                     skeleton, distance = medial_axis(component, return_distance=True)
+                    
+#                     max_dist = distance.max()
+#                     central_points = np.argwhere(distance == max_dist)
+
+#                     if central_points.size > 0:
+#                         idx = len(central_points) // 2
+#                         central_point = central_points[idx]
+#                         centreline_points.append((slice_idx, central_point[0], central_point[1]))
+
+#                         # Visualization: combine component, skeleton and center point
+#                         visualization = [component.astype(float), skeleton.astype(float), np.zeros_like(component, dtype=float)]
+#                         visualizations.append(visualization)
+#         return centreline_points, visualizations
 
 if __name__ == "__main__":
-    testing = 1
+    testing = 0
     display = 0
 
     if not testing and not display:
-        generator = Generate_single_centreline_points("data/coronal/seg", "data/coronal/centreline_single")
+        # generator = Generate_single_centreline_points("data/centreline_set/axial/seg", "data/centreline_set/axial/centreline_single")
+        generator = GenerateCentrelinePoints("data/axial/seg", "data/axial/centreline_single_skeltonize")
         generator.generate_centreline()
         testing = 0
         
     if testing and not display:
-        for filename in tqdm.tqdm(sorted(os.listdir("data/coronal/centreline_single"))):
-            img_path = os.path.join("data/coronal/img", filename.replace('.txt', '.nii.gz'))
-            seg_path = os.path.join("data/coronal/seg", filename.replace('.txt', '.nii.gz'))
+        for filename in tqdm.tqdm(sorted(os.listdir("data/centreline_set/axial/centreline_single_skeltonize"))):
+            img_path = os.path.join("data/centreline_set/axial/img", filename.replace('.txt', '.nii.gz'))
+            seg_path = os.path.join("data/centreline_set/axial/seg", filename.replace('.txt', '.nii.gz'))
             img = sitk.ReadImage(img_path)
             img_arr = sitk.GetArrayFromImage(img)
             seg = sitk.ReadImage(seg_path)
             seg_arr = sitk.GetArrayFromImage(seg)
-            centreline_path = os.path.join("data/coronal/centreline_single", filename)
+            centreline_path = os.path.join("data/centreline_set/axial/centreline_single_skeltonize", filename)
             points_df = get_centreline_points_from_file(centreline_path)
-
+            real_centreline_points = get_centreline_points_from_file(os.path.join("data/centreline_set/axial/centreline", filename.replace('.txt', ' HASTE tracings')))
             for slice_number in range(seg_arr.shape[0]):  # Corrected iteration over slices
                 img_slice = img_arr[slice_number]
                 seg_slice = seg_arr[slice_number]
                 points_in_slice = centreline_prompt(points_df, slice_number)
-                points_label = np.ones((len(points_in_slice)))
+                points_label = np.zeros((len(points_in_slice)))  
+                real_points_in_slice = centreline_prompt(real_centreline_points, slice_number)
+                real_points_in_slice_label = np.ones((len(real_points_in_slice)))
                 if len(points_in_slice) == 0:
                     continue
                 plt.figure(figsize=(12, 6))
@@ -471,19 +335,21 @@ if __name__ == "__main__":
                 plt.title(f"Image and Points - Slice {slice_number}")
                 plt.imshow(img_slice, cmap='gray')
                 show_points(points_in_slice, points_label, plt.gca(), marker_size=50)
+                show_points(real_points_in_slice, real_points_in_slice_label, plt.gca(), marker_size=50)
                 plt.subplot(1, 2, 2)
                 plt.title(f"Segmentation - Slice {slice_number}")
                 plt.imshow(seg_slice, cmap='gray')
                 show_mask(seg_slice, plt.gca())
-                save_path = os.path.join("weak_centreline_single_visualise", filename.replace('.txt', ''), f"slice_{slice_number}.png")
+                save_path = os.path.join("weak_complete_centreline_axial_single_skeletonize_visualise", filename.replace('.txt', ''), f"slice_{slice_number}.png")
                 os.makedirs(os.path.dirname(save_path), exist_ok=True)
                 plt.savefig(save_path, bbox_inches='tight', dpi=100)
                 plt.close()
-        display = 0
+    
+
                     
     if display:
-        for filename in tqdm.tqdm(os.listdir('data/coronal/centreline_single')):
-            data_path = os.path.join('data/coronal/centreline_single', filename)
+        for filename in tqdm.tqdm(os.listdir('data/centreline_set/axial/centreline_single_skeltonize')):
+            data_path = os.path.join('data/centreline_set/axial/centreline_single_skeltonize', filename)
             centreline_points = get_centreline_points_from_file(data_path, percentage=20)
 
             xs = centreline_points["x"]
@@ -497,12 +363,16 @@ if __name__ == "__main__":
             ax.set_ylabel('Y Coordinate')
             ax.set_zlabel('Slice Number')
             ax.set_title('3D Scatter Plot of Centreline Points')
-            saved_path = os.path.join('centreline_singlepoint_plot', filename.replace('.txt', '.png'))
+            saved_path = os.path.join('centreline_single_skeltonize_axial_plot', filename.replace('.txt', '.png'))
             
             if not os.path.exists(os.path.dirname(saved_path)):
                 os.makedirs(os.path.dirname(saved_path))
             
             plt.savefig(saved_path, bbox_inches='tight', dpi=200)
             plt.close()
-                
+    # tidy_plane("data/pseudo_data/centreline", "data/pseudo_data", type='centreline')
+    # tidy_plane("data/centreline_set/segATI", "data/centreline_set", type='segATI')
+    # rename_files("data/pseudo_data/img")
+
+    
     
