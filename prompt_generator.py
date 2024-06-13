@@ -1,15 +1,7 @@
-import os 
-import argparse
+
 import numpy as np
-import torch
-import matplotlib.pyplot as plt
-import cv2
-import SimpleITK as sitk
-from segment_anything import sam_model_registry, SamPredictor
-import time 
-import random
-from PIL import Image
 import pandas as pd
+import random
 import re
 import math
 import xml.etree.ElementTree as ET

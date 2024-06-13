@@ -1,5 +1,4 @@
 import SimpleITK as sitk
-from SimpleITK import CastImageFilter
 import os
 import shutil
 import numpy as np
@@ -7,15 +6,9 @@ import re
 import tqdm
 import matplotlib.pyplot as plt
 from prompt_generator import get_centreline_points_from_file,centreline_prompt
-import pandas as pd
-from utils.display_helper import show_box,show_mask,show_points
-from skimage.morphology import skeletonize_3d,remove_small_objects
-from skimage.measure import label, regionprops
-from scipy.ndimage import binary_dilation
-from scipy.ndimage import binary_opening, binary_closing
-from skimage.morphology import skeletonize
+from utils.display_helper import show_mask,show_points
+from skimage.measure import label
 from skimage.morphology import medial_axis,label
-from scipy.ndimage import find_objects
 
 
 def overwrite_labels(src_folder, target_folder, OnlyTI=False, OnlyATI=False):

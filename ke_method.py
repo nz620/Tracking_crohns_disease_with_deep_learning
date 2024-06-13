@@ -8,8 +8,6 @@ Please follow the same dir to make the code work:
 """
 
 import os
-import matplotlib.pyplot as plt
-from skimage import measure
 import pandas as pd
 import numpy as np
 import SimpleITK as sitk

@@ -1,17 +1,8 @@
-from albumentations.pytorch import ToTensorV2
+
 import cv2
-import albumentations as A
 import torch
 import numpy as np
-from torch.nn import functional as F
-from skimage.measure import label, regionprops
-from matplotlib import pyplot as plt
-import random
 import torch.nn as nn
-import logging
-import os
-from scipy.spatial.distance import directed_hausdorff
-
 
 def _threshold(x, threshold=None):
     if threshold is not None:

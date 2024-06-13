@@ -2,9 +2,8 @@ import numpy as np
 import SimpleITK as sitk
 import os
 join = os.path.join
-from skimage import transform,exposure
+from skimage import transform
 from tqdm import tqdm
-import cc3d
 import cv2
 from prompt_generator import get_centreline_points_from_file,centreline_prompt
 

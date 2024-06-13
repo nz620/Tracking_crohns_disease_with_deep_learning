@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.models as models
 from typing import Optional, Tuple, Type
-from torchvision.models import ResNet34_Weights,ResNet50_Weights
+from torchvision.models import ResNet50_Weights
 from .common import LayerNorm2d, MLPBlock
 
 

@@ -5,24 +5,18 @@ import os
 from loss import CombinedLoss
 from metrics import SegMetrics, _threshold,_list_tensor
 from tqdm import tqdm
-from skimage import transform
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader,random_split,ConcatDataset
-import monai
+from torch.utils.data import  DataLoader,ConcatDataset
 from sam_med2d import sam_model_registry
 import torch.nn.functional as F
 import argparse
 import random
 from datetime import datetime
 import shutil
-import glob
-import re
-import scipy.ndimage as ndi
 from utils.display_helper import show_mask, show_points, show_box
 import cv2
 from dataloader_augment import NpyDataset
-from torch.utils.tensorboard import SummaryWriter
 import wandb
 import SimpleITK as sitk
 
@@ -31,7 +25,6 @@ torch.manual_seed(2023)
 random.seed(2023)
 torch.cuda.empty_cache()
 
-# # torch.distributed.init_process_group(backend="gloo")
 
 os.environ["OMP_NUM_THREADS"] = "4"  # export OMP_NUM_THREADS=4
 os.environ["OPENBLAS_NUM_THREADS"] = "4"  # export OPENBLAS_NUM_THREADS=4

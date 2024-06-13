@@ -1,7 +1,7 @@
 import numpy as np
 import SimpleITK as sitk
 import os
-from skimage import transform, exposure, util
+from skimage import transform
 from tqdm import tqdm
 import random
 import cv2
@@ -13,7 +13,7 @@ nii_path = "data/centreline_set/axial/img"
 gt_path = "data/centreline_set/axial/seg"
 centreline_path = "data/centreline_set/axial/centreline"
 generated_centreilne_path = "data/centreline_set/axial/centreline_single_skeltonize"
-npy_path = "data/centreline_set/axial/npy2023_5_folds_25d"
+npy_path = "data/centreline_set/axial/npy2023_5_folds_test"
 
 # Constants
 img_name_suffix = ".nii.gz"
