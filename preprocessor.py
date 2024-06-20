@@ -21,7 +21,6 @@ def overwrite_labels(src_folder, target_folder, OnlyTI=False, OnlyATI=False):
     :param OnlyATI: Only set the abnormal TI area as foreground
     :return: None
     """
-    # Create the target folder if it doesn't exist
     os.makedirs(target_folder, exist_ok=True)
     # Iterate over all files in the source folder
     for filename in os.listdir(src_folder):
@@ -42,7 +41,7 @@ def overwrite_labels(src_folder, target_folder, OnlyTI=False, OnlyATI=False):
             arr = np.where(arr == 1, 1, arr) # abnormal terminal ileum
             arr = np.where(arr == 2, 0, arr) # normal terminal ileum
 
-        # Create new segmentation image
+    
         seg_new = sitk.GetImageFromArray(arr)
         if seg_new.GetSize() == seg.GetSize():
             seg_new.CopyInformation(seg)
@@ -119,7 +118,7 @@ def tidy_plane(source_directory, target_directory, type='img'):
         elif 'contrast' in filename.lower():
             sub_target_directory = os.path.join(sub_target_directory, 'contrast', type)
         else:
-            continue  # Skip file if it doesn't contain any of the keywords
+            continue  
 
         if not os.path.exists(sub_target_directory):
             os.makedirs(sub_target_directory)
@@ -131,53 +130,7 @@ def tidy_plane(source_directory, target_directory, type='img'):
         
 
 
-# class Generate_single_centreline_points:
-#     """
-#     Generate a single centreline point from the segmentation mask, which represents the centroid of the segment.
-#     """
-#     def __init__(self, seg_folder, output_folder):
-#         self.seg_folder = seg_folder
-#         self.output_folder = output_folder
 
-#     def generate_centreline(self):
-#         """
-#         Generate centreline points from the segmentation mask.
-#         """
-#         os.makedirs(self.output_folder, exist_ok=True)
-#         for filename in os.listdir(self.seg_folder):
-#             seg_path = os.path.join(self.seg_folder, filename)
-#             seg = sitk.ReadImage(seg_path)
-#             seg_arr = sitk.GetArrayFromImage(seg)
-
-#             centreline_points = self._generate_centreline_points(seg_arr)
-
-#             output_filename = filename.replace('.nii.gz', '.txt')
-#             output_path = os.path.join(self.output_folder, output_filename)
-#             with open(output_path, 'w') as file:
-#                 for point in centreline_points:
-#                     file.write(f'{point[0]} {point[1]} {point[2]}\n')
-
-#     def _generate_centreline_points(self, seg_arr):
-#         """
-#         Generate the centre point for each connected component in the segmentation array.
-#         """
-#         centreline_points = []
-#         for slice_idx in tqdm.tqdm(range(seg_arr.shape[0])):
-#             slice = seg_arr[slice_idx]
-#             labeled_image = sitk.ConnectedComponent(sitk.GetImageFromArray(slice))
-            
-#             # Use LabelShapeStatisticsImageFilter to find centroids
-#             label_shape_filter = sitk.LabelShapeStatisticsImageFilter()
-#             label_shape_filter.Execute(labeled_image)
-#             num_features = label_shape_filter.GetNumberOfLabels()
-
-#             if num_features > 0:
-#                 for label in range(1, num_features + 1):
-#                     # Find the centroid of each label
-#                     centroid = label_shape_filter.GetCentroid(label)
-#                     centreline_points.append((slice_idx, int(centroid[1]), int(centroid[0])))  # Ensure x, y are in correct order
-
-#         return centreline_points
 
 class GenerateCentrelinePoints:
     """
@@ -229,69 +182,6 @@ class GenerateCentrelinePoints:
 
         return centreline_points
 
-# class GenerateCentrelinePoints:
-#     def __init__(self, seg_folder, output_folder, viz_folder):
-#         self.seg_folder = seg_folder
-#         self.output_folder = output_folder
-#         self.viz_folder = viz_folder  # Folder to save visualizations
-
-#     def generate_centreline(self):
-#         os.makedirs(self.output_folder, exist_ok=True)
-#         os.makedirs(self.viz_folder, exist_ok=True)
-#         for filename in os.listdir(self.seg_folder):
-#             seg_path = os.path.join(self.seg_folder, filename)
-#             seg = sitk.ReadImage(seg_path)
-#             seg_arr = sitk.GetArrayFromImage(seg)
-
-#             centreline_points, visualizations = self._generate_centreline_points(seg_arr)
-
-#             output_filename = filename.replace('.nii.gz', '.txt')
-#             output_path = os.path.join(self.output_folder, output_filename)
-#             with open(output_path, 'w') as file:
-#                 for point in centreline_points:
-#                     file.write(f'{point[0]} {point[1]} {point[2]}\n')
-#             for idx, (viz, points) in enumerate(zip(visualizations, centreline_points)):
-#                 fig, axs = plt.subplots(1, 3, figsize=(10, 6))
-#                 show_mask(viz[0], axs[0])
-#                 axs[0].axis('off')
-                
-#                 show_mask(viz[0], axs[1])
-#                 show_mask(viz[1], axs[1],random_color=True)
-#                 axs[1].axis('off')
-                
-#                 show_mask(viz[0], axs[2])
-#                 axs[2].scatter(points[2], points[1], color='red', s=10)  # Plot the center point
-#                 axs[2].axis('off')
-#                 fig.tight_layout
-
-#                 plt.savefig(os.path.join(self.viz_folder, f'{filename}_slice_{idx}.png'))
-                
-#                 plt.close()
-
-
-#     def _generate_centreline_points(self, seg_arr):
-#         centreline_points = []
-#         visualizations = []
-#         for slice_idx in tqdm.tqdm(range(seg_arr.shape[0])):
-#             slice = seg_arr[slice_idx]
-#             if np.any(slice):
-#                 labeled_slice, num_features = label(slice, return_num=True, connectivity=2)
-#                 for i in range(1, num_features + 1):
-#                     component = labeled_slice == i
-#                     skeleton, distance = medial_axis(component, return_distance=True)
-                    
-#                     max_dist = distance.max()
-#                     central_points = np.argwhere(distance == max_dist)
-
-#                     if central_points.size > 0:
-#                         idx = len(central_points) // 2
-#                         central_point = central_points[idx]
-#                         centreline_points.append((slice_idx, central_point[0], central_point[1]))
-
-#                         # Visualization: combine component, skeleton and center point
-#                         visualization = [component.astype(float), skeleton.astype(float), np.zeros_like(component, dtype=float)]
-#                         visualizations.append(visualization)
-#         return centreline_points, visualizations
 
 if __name__ == "__main__":
     testing = 0

@@ -36,7 +36,7 @@ names = [name for name in names if os.path.exists(os.path.join(centreline_path, 
 names = [name for name in names if os.path.exists(os.path.join(generated_centreilne_path, name.replace(gt_name_suffix, generated_centreilne_name_suffix)))]
 # Assign folds sequentially
 fold_assignments = {}
-fold_sizes = (len(names) + num_folds - 1) // num_folds  # ceiling division to handle any remainder
+fold_sizes = (len(names) + num_folds - 1) // num_folds  
 print(names)
 random.shuffle(names)
 print(names)
@@ -85,9 +85,6 @@ for fold, names_in_fold in fold_assignments.items():
             )
             image_data_pre[image_data == 0] = 0
             image_data_pre = np.uint8(image_data_pre)
-            # Histogram Equalization
-            # for i in range(image_data_pre.shape[0]):
-            #     image_data_pre[i] = cv2.equalizeHist(image_data_pre[i])
             for i in range(image_data_pre.shape[0]):
                 image_data_pre[i] = clahe.apply(image_data_pre[i])
 
@@ -98,10 +95,10 @@ for fold, names_in_fold in fold_assignments.items():
                 prev_idx = i - 1 if i - 1 in z_index else i
                 next_idx = i + 1 if i + 1 in z_index else i
                 
-                # Fetch the images for the current stack
                 img_prev = image_data_pre[prev_idx, :, :]
                 img_next = image_data_pre[next_idx, :, :]
                 img_i = image_data_pre[i, :, :]
+                ## repeat a single channel to 3 channels
                 # img_3c = np.repeat(img_i[:, :, None], 3, axis=-1)
                 img_3c = np.stack([img_prev, img_i, img_next], axis=-1)
                 resize_img_skimg = transform.resize(

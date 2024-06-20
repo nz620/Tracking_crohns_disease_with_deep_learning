@@ -26,21 +26,17 @@ def get_boundary(mask):
     # Threshold the mask to make it binary
     mask = _threshold(mask, 0.5)
     
-    # Ensure the mask is detached from the computation graph and moved to CPU
     mask_np = mask.detach().cpu().numpy().astype(np.uint8)
-    
-    # If the mask has more than 2 dimensions, ensure it is 2D
+ 
     if mask_np.ndim > 2:
         mask_np = mask_np.squeeze()
 
-    # Ensure the mask is a binary image (0 or 255)
+
     mask_np = mask_np * 255
-    
-    # Ensure the mask is at least 1x1 in size
+
     if mask_np.shape[0] == 0 or mask_np.shape[1] == 0:
         mask_np = np.zeros((1, 1), dtype=np.uint8)
 
-    # Check the dimensions of the mask
     if mask_np.ndim != 2:
         raise ValueError("Mask dimensions are not 2D after squeezing. Got dimensions: {}".format(mask_np.shape))
 

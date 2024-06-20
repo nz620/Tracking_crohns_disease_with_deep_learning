@@ -192,7 +192,6 @@ def load_train_datasets(args,fold_index=0):
         
     if args.include_weak:
         weak_dataset = NpyDataset(join(args.weak_npy_path,args.data_type,'npy2023_test'), augment=True, aug_num=args.aug_num)
-        # weak_dataset_validate = NpyDataset(join(args.weak_npy_path,args.data_type,'npy_single','validation'), augment=True, aug_num=args.aug_num)
         train_datasets.append(weak_dataset)
     if args.include_pseudo:
         pseudo_dataset = NpyDataset(join(args.pseudo_npy_path,args.data_type,'npy2023_test'), augment=True, aug_num=args.aug_num)
@@ -212,8 +211,6 @@ def lr_schedule(epoch, wp=10, mi=100, initial_lr=0.0001):
         # Constant learning rate for 5 epochs after warmup
         return initial_lr
     else:
-        # Begin decay after wp + 10
-        # Adjust the decay phase to start after wp + 10
         return initial_lr * (1 - ((epoch - (wp)) / (mi - (wp))))
 
 
@@ -268,16 +265,13 @@ def train_and_test(fold):
     crohnsam_model.train()
     trainable_params = [param for param in crohnsam_model.parameters() if param.requires_grad]
     
-    # Initialize the optimizer with only trainable parameters
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
 
-    # LambdaLR scheduler:
     scheduler = torch.optim.lr_scheduler.LambdaLR(
         optimizer,
         lr_lambda=lambda epoch: lr_schedule(epoch, wp=args.wp, mi=args.num_epochs, initial_lr=args.lr)
     )
     
-    # seg_loss = FocalDiceloss_IoULoss() 
     seg_loss = CombinedLoss()
     num_epochs = args.num_epochs
     train_losses = []
@@ -313,7 +307,6 @@ def train_and_test(fold):
             for step, (image, gt2D, point,point_label,box, _) in enumerate(tqdm(validate_dataloader)):
                 image, gt2D,point,point_label,box = image.to(device), gt2D.to(device),point.to(device),point_label.to(device),box.to(device)
                 crohnsam_pred,iou_pred = crohnsam_model(image, point,point_label,box)
-                # loss = seg_loss(crohnsam_pred, gt2D) + ce_loss(crohnsam_pred, gt2D.float())
                 loss = seg_loss(crohnsam_pred,gt2D, iou_pred)
                 val_loss += loss.item()
             avg_val_loss = val_loss / len(validate_dataloader)
@@ -342,9 +335,7 @@ def train_and_test(fold):
         if early_stopping(avg_val_loss):
             print("Early stopping triggered.")
             break
-        # if patience_counter >= patience:
-        #     print(f"Stopping training early at epoch {epoch} due to no improvement in validation loss for {patience} epochs.")
-        #     break  # Stop the training loop
+
         plt.figure(figsize=(10, 6))
         plt.plot(train_losses, label='Training Loss')
         plt.plot(val_losses, label='Validation Loss')
@@ -403,7 +394,6 @@ def train_and_test(fold):
             plt.savefig(os.path.join(pre_save_path,  img_names[0] + ' prediction.png'), dpi=200, bbox_inches='tight')
             plt.close()
             #pred.shape = 1x1xHxW, gt2D.shape = 1x1xHxW
-            # Aggregate predictions by patient
             if patient_id not in patient_data:
                 patient_data[patient_id] = {'preds': [], 'gts': [], 'names': []}
             patient_data[patient_id]['preds'].append(smoothed_preds.squeeze(1))
@@ -452,7 +442,6 @@ def calculate_average_metrics(all_fold_results):
         return {}
 
     average_metrics = {}
-    # Assume all folds have the same set of metrics for simplification
     metrics_keys = all_fold_results[0]['overall_metrics'].keys()  
     
     for metric in metrics_keys:
@@ -461,10 +450,8 @@ def calculate_average_metrics(all_fold_results):
             'std_across_folds': [],
         }
         
-        # Collect all patient averages for the current metric across all folds
         all_fold_averages = [fold['overall_metrics'][metric]['mean'] for fold in all_fold_results]
         
-        # Compute the mean and standard deviation across all patient averages
         mean_across_folds = np.mean(all_fold_averages)
         std_across_folds = np.std(all_fold_averages)
         

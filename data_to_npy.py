@@ -85,15 +85,12 @@ for name in tqdm(names):
             image_data_pre[i] = clahe.apply(image_data_pre[i])
         
         img_roi = image_data_pre[z_index, :, :]
-        np.savez_compressed(join(npy_path, gt_name.split(gt_name_suffix)[0]+'.npz'), imgs=img_roi, gts=gt_roi, spacing=img_sitk.GetSpacing())
+
         # save the image and ground truth as nii files for sanity check;
-        # they can be remove
-        # save the each CT image as npy file
+
         for i in z_index:
             ori_h, ori_w = image_data_pre[i, :, :].shape
             scale_h, scale_w = image_size / ori_h, image_size / ori_w
-            # img_i = image_data_pre[i, :, :]
-            # img_3c = np.repeat(img_i[:, :, None], 3, axis=-1)
             prev_idx = i - 1 if i - 1 in z_index else i
             next_idx = i + 1 if i + 1 in z_index else i
             

@@ -15,7 +15,6 @@ random.seed(2023)
 torch.manual_seed(2023)
 torch.cuda.empty_cache()
 join = os.path.join
-# torch.distributed.init_process_group(backend="gloo")
 
 os.environ["OMP_NUM_THREADS"] = "4"  # export OMP_NUM_THREADS=4
 os.environ["OPENBLAS_NUM_THREADS"] = "4"  # export OPENBLAS_NUM_THREADS=4

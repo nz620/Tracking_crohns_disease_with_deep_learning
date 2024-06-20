@@ -3,7 +3,7 @@ import numpy as np
 
 def _threshold(x, threshold=None):
     if threshold is not None:
-        return (x > threshold).type(torch.float32)  # Ensure float type for subsequent operations
+        return (x > threshold).type(torch.float32)  
     return x
 
 def _list_tensor(x, y):
